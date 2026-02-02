@@ -18,4 +18,6 @@ And RF shielding. And a bunch of other I2S things for recording and playback, so
 
 Stuff gets weird when you have a high-gain antenna next to it. 
 
+Yes, the robot voice is terrible. TERRIBLE ON PURPOSE.
+
 
