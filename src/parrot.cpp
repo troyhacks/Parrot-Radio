@@ -11,11 +11,14 @@
 #define PD_PIN 13
 #define AUDIO_ON_PIN 4  // Our squelch detect!
 
+#define SA868_TX 21   // goes to SA868 module's RX
+#define SA868_RX 22   // goes to SA868 module's TX
+
 // I2S pins (external codec in slave mode)
 #define I2S_MCLK 0
-#define I2S_BCLK 26
-#define I2S_LRCLK 27
 #define I2S_SD_IN 14   // Audio from external device
+#define I2S_LRCLK 27
+#define I2S_BCLK 26
 #define I2S_SD_OUT 25  // Audio to external device
 
 #define I2S_PORT I2S_NUM_0
@@ -517,8 +520,7 @@ void setup() {
   digitalWrite(PTT_PIN, HIGH);  // RX mode
 
   Serial.begin(115200);
-  SA868.begin(9600, SERIAL_8N1, 21, 22);
-  while (SA868.available()) SA868.read();  // Clear receive buffer
+  SA868.begin(9600, SERIAL_8N1, SA868_TX, SA868_RX);
 
   // Pin setup
   pinMode(PD_PIN, OUTPUT);
@@ -550,7 +552,8 @@ void setup() {
   // Initialize I2S
   initI2S();
 
-  delay(2000);  // Let module boot
+  delay(1000);  // Let module boot
+  while (SA868.available()) SA868.read();  // Clear any boot noise
 
   // Initialize SA868
   initializeSA868();
