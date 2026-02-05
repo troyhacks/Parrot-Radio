@@ -27,6 +27,13 @@
 
 #define I2S_PORT I2S_NUM_0
 
+// Battery voltage monitoring (ESP-WROVER-KIT: 100K/100K divider on IO35)
+#define VBAT_PIN 35
+#define VBAT_DIVIDER 2.0      // 100K/100K voltage divider
+#define VBAT_LIPO_MIN 3.0     // LiPo minimum voltage
+#define VBAT_LIPO_MAX 4.3     // Slightly above full charge to detect presence
+#define VBAT_CHECK_INTERVAL 30000  // Check every 30 seconds
+
 // Default pins (actual values loaded from Preferences):
 // PTT=33, PD=13, AudioOn=4
 // I2S: MCLK=0, BCLK=26, LRCLK=27, DIN=14, DOUT=25
@@ -44,7 +51,7 @@ HardwareSerial SA868(2);  // UART2
 // WiFi and Weather defaults
 #define AP_SSID "RadioParrot"
 #define AP_PASSWORD "parrot123"
-// Default location: Stone Mills, Ontario
+// Default location: Stone Mills, Ontario - home of SideBurn!
 #define DEFAULT_LAT 44.45f
 #define DEFAULT_LON -76.88f
 
@@ -81,6 +88,7 @@ int pinI2S_BCLK;
 int pinI2S_LRCLK;
 int pinI2S_DIN;
 int pinI2S_DOUT;
+int pinVBAT;       // Battery voltage ADC pin (-1 = disabled)
 
 // Testing mode - disables PTT
 bool testingMode;
@@ -612,6 +620,9 @@ void handlePins() {
   html += "<label>Data In:</label><input name='din' type='number' value='" + String(pinI2S_DIN) + "'><br>";
   html += "<label>Data Out:</label><input name='dout' type='number' value='" + String(pinI2S_DOUT) + "'><br>";
 
+  html += "<h2>Battery Monitor</h2>";
+  html += "<label>VBAT Pin (-1 to disable):</label><input name='vbat' type='number' min='-1' value='" + String(pinVBAT) + "'><br>";
+
   html += "<br><input type='submit' value='Save & Reboot'>";
   html += "</form>";
   html += "<p><a href='/'>Back to Main</a></p>";
@@ -630,6 +641,7 @@ void handleSavePins() {
   if (server.hasArg("lrclk")) preferences.putInt("pinLRCLK", server.arg("lrclk").toInt());
   if (server.hasArg("din")) preferences.putInt("pinDIN", server.arg("din").toInt());
   if (server.hasArg("dout")) preferences.putInt("pinDOUT", server.arg("dout").toInt());
+  if (server.hasArg("vbat")) preferences.putInt("pinVBAT", server.arg("vbat").toInt());
 
   preferences.end();
 
@@ -667,6 +679,7 @@ void initWiFi() {
   pinI2S_LRCLK = preferences.getInt("pinLRCLK", 27);
   pinI2S_DIN = preferences.getInt("pinDIN", 14);
   pinI2S_DOUT = preferences.getInt("pinDOUT", 25);
+  pinVBAT = preferences.getInt("pinVBAT", VBAT_PIN);  // Default 35, -1 to disable
 
   // Testing mode (default ON for safety)
   testingMode = preferences.getBool("testmode", true);
@@ -1198,6 +1211,18 @@ void loop() {
       saveToSlot(nextSlot);
       nextSlot = (nextSlot + 1) % MAX_SLOTS;
       playbackWithFeedback();
+    }
+  }
+
+  // Battery voltage check (only when idle, disabled if pinVBAT == -1)
+  static unsigned long lastBattCheck = 0;
+  if (pinVBAT >= 0 && !recording && !nowReceiving && millis() - lastBattCheck > VBAT_CHECK_INTERVAL) {
+    lastBattCheck = millis();
+    int raw = analogRead(pinVBAT);
+    float voltage = (raw / 4095.0) * 3.3 * VBAT_DIVIDER;
+    if (voltage > VBAT_LIPO_MIN && voltage < VBAT_LIPO_MAX) {
+      int percent = constrain((int)((voltage - VBAT_LIPO_MIN) / (4.2 - VBAT_LIPO_MIN) * 100), 0, 100);
+      Serial.printf("Battery: %.2fV (%d%%)\n", voltage, percent);
     }
   }
 
