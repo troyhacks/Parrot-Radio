@@ -1,5 +1,8 @@
 #include <Arduino.h>
 #include <HardwareSerial.h>
+#include <Wire.h>
+#include <time.h>
+#include <sys/time.h>
 #include <driver/i2s.h>
 #include <esp_heap_caps.h>
 #include <WiFi.h>
@@ -17,6 +20,11 @@
 
 #define SA868_TX 21   // goes to SA868 module's RX
 #define SA868_RX 22   // goes to SA868 module's TX
+
+// DS3231 RTC (I2C)
+#define RTC_SDA 19
+#define RTC_SCL 23
+#define DS3231_ADDR 0x68
 
 // I2S pins (external codec in slave mode)
 #define I2S_MCLK 0
@@ -92,6 +100,22 @@ int pinVBAT;       // Battery voltage ADC pin (-1 = disabled)
 
 // Testing mode - disables PTT
 bool testingMode;
+
+// Custom DTMF # message
+String dtmfHashMessage;
+
+// DS3231 RTC state
+String timezonePosix;   // POSIX TZ string, e.g. "EST5EDT,M3.2.0,M11.1.0"
+bool rtcFound = false;
+bool ntpSynced = false;
+
+// Pre/post messages spoken before/after all transmissions
+String preMessage;
+String postMessage;
+
+// Last battery reading (updated in loop)
+float lastBatteryV = 0;
+int lastBatteryPct = -1;
 
 // Buffers (allocated in PSRAM)
 int16_t* audioBuffer = nullptr;
@@ -287,6 +311,91 @@ void playRadioTest() {
   Serial.println("Radio test complete!");
 }
 
+// ==================== Macro Expansion ====================
+// Expands {tokens} in message strings with live values
+String expandMacros(const String &text) {
+  String result = text;
+  // Date/time macros
+  struct tm t;
+  if (getLocalTime(&t, 0)) {
+    char buf[32];
+    strftime(buf, sizeof(buf), "%Y-%m-%d", &t);
+    result.replace("{date}", buf);
+    strftime(buf, sizeof(buf), "%H:%M", &t);
+    result.replace("{time}", buf);
+    strftime(buf, sizeof(buf), "%I:%M %p", &t);
+    result.replace("{time12}", buf);
+    strftime(buf, sizeof(buf), "%A", &t);
+    result.replace("{day}", buf);
+    strftime(buf, sizeof(buf), "%H", &t);
+    result.replace("{hour}", buf);
+    strftime(buf, sizeof(buf), "%M", &t);
+    result.replace("{minute}", buf);
+  } else {
+    result.replace("{date}", "unknown");
+    result.replace("{time}", "unknown");
+    result.replace("{time12}", "unknown");
+    result.replace("{day}", "unknown");
+    result.replace("{hour}", "unknown");
+    result.replace("{minute}", "unknown");
+  }
+  // Battery macros
+  if (lastBatteryPct >= 0) {
+    result.replace("{battery}", String(lastBatteryPct) + " percent");
+    result.replace("{voltage}", String(lastBatteryV, 1) + " volts");
+  } else {
+    result.replace("{battery}", "unknown");
+    result.replace("{voltage}", "unknown");
+  }
+  // Slot macros
+  result.replace("{slot}", String(nextSlot + 1));
+  int usedSlots = 0;
+  for (int i = 0; i < MAX_SLOTS; i++) {
+    if (slots[i].sampleCount > 0) usedSlots++;
+  }
+  result.replace("{slots_used}", String(usedSlots));
+  result.replace("{slots_total}", String(MAX_SLOTS));
+  // Radio/system macros
+  result.replace("{freq}", radioFreq);
+  result.replace("{uptime}", String(millis() / 60000) + " minutes");
+  result.replace("{ip}", WiFi.localIP().toString());
+  return result;
+}
+
+// Phoneme pronunciations for words eSpeak's minimal dictionary can't handle
+// Uses eSpeak Kirshenbaum notation inside [[ ]] brackets (requires espeakPHONEMES flag)
+struct PhonemeEntry { const char* word; const char* phonemes; };
+const PhonemeEntry ttsPronunciations[] = {
+  { "overcast",     "[['oUv@kast]]" },
+  // { "drizzle",      "[[dr'Iz@L]]" },
+  // { "thunderstorm", "[[T'Vnd@stO:rm]]" },
+};
+const int ttsPronunciationCount = sizeof(ttsPronunciations) / sizeof(ttsPronunciations[0]);
+
+// Case-insensitive whole-word replacement with phoneme codes
+void applyPhonemes(String &text) {
+  for (int i = 0; i < ttsPronunciationCount; i++) {
+    String wordLower = ttsPronunciations[i].word;
+    String textLower = text;
+    textLower.toLowerCase();
+    int pos = 0;
+    while ((pos = textLower.indexOf(wordLower, pos)) >= 0) {
+      int endPos = pos + wordLower.length();
+      bool wordStart = (pos == 0 || !isAlpha(text[pos - 1]));
+      bool wordEnd = (endPos >= text.length() || !isAlpha(text[endPos]));
+      if (wordStart && wordEnd) {
+        String replacement = ttsPronunciations[i].phonemes;
+        text = text.substring(0, pos) + replacement + text.substring(endPos);
+        textLower = text;
+        textLower.toLowerCase();
+        pos += replacement.length();
+      } else {
+        pos++;
+      }
+    }
+  }
+}
+
 // Text sanitization for TTS
 String sanitizeForTTS(String text) {
   // Remove wind direction arrows
@@ -307,37 +416,126 @@ String sanitizeForTTS(String text) {
   text.replace("%", " percent");
   text.replace("km/h", " kilometers per hour");
 
-  // Clean up double spaces
-  while (text.indexOf("  ") >= 0) {
-    text.replace("  ", " ");
+  // Replace words eSpeak's minimal dictionary can't pronounce with phoneme codes
+  applyPhonemes(text);
+
+  // Strip any remaining non-ASCII characters eSpeak can't pronounce
+  String clean;
+  clean.reserve(text.length());
+  for (unsigned int i = 0; i < text.length(); i++) {
+    char c = text[i];
+    if (c >= 0x20 && c <= 0x7E) {  // printable ASCII only
+      clean += c;
+    } else if (c == '\n' || c == '\r') {
+      clean += ' ';
+    }
   }
 
-  return text;
+  // Clean up double spaces
+  while (clean.indexOf("  ") >= 0) {
+    clean.replace("  ", " ");
+  }
+
+  return clean;
 }
 
-// Convert number to spoken words (e.g., 23 -> "twenty three")
-String numberToWords(int n) {
-  if (n < 0) return "minus " + numberToWords(-n);
-  if (n == 0) return "zero";
+// ==================== DS3231 RTC ====================
 
-  const char* ones[] = {"", "one", "two", "three", "four", "five", "six", "seven", "eight", "nine",
-                        "ten", "eleven", "twelve", "thirteen", "fourteen", "fifteen", "sixteen",
-                        "seventeen", "eighteen", "nineteen"};
-  const char* tens[] = {"", "", "twenty", "thirty", "forty", "fifty", "sixty", "seventy", "eighty", "ninety"};
+uint8_t bcdToDec(uint8_t bcd) { return (bcd >> 4) * 10 + (bcd & 0x0F); }
+uint8_t decToBcd(uint8_t dec) { return ((dec / 10) << 4) | (dec % 10); }
 
-  if (n < 20) return ones[n];
-  if (n < 100) {
-    String result = tens[n / 10];
-    if (n % 10 != 0) result += " " + String(ones[n % 10]);
-    return result;
+bool ds3231Read(struct tm &t) {
+  Wire.beginTransmission(DS3231_ADDR);
+  Wire.write(0x00);
+  if (Wire.endTransmission() != 0) return false;
+  Wire.requestFrom((uint8_t)DS3231_ADDR, (uint8_t)7);
+  if (Wire.available() < 7) return false;
+  t.tm_sec  = bcdToDec(Wire.read() & 0x7F);
+  t.tm_min  = bcdToDec(Wire.read());
+  t.tm_hour = bcdToDec(Wire.read() & 0x3F);
+  Wire.read();  // day of week (skip, mktime computes it)
+  t.tm_mday = bcdToDec(Wire.read());
+  t.tm_mon  = bcdToDec(Wire.read() & 0x1F) - 1;  // struct tm months 0-11
+  t.tm_year = bcdToDec(Wire.read()) + 100;         // DS3231 stores 0-99 for 2000-2099
+  t.tm_isdst = 0;
+  return true;
+}
+
+void ds3231Write(const struct tm &t) {
+  Wire.beginTransmission(DS3231_ADDR);
+  Wire.write(0x00);
+  Wire.write(decToBcd(t.tm_sec));
+  Wire.write(decToBcd(t.tm_min));
+  Wire.write(decToBcd(t.tm_hour));
+  Wire.write(decToBcd((t.tm_wday) + 1));  // DS3231 DOW is 1-7
+  Wire.write(decToBcd(t.tm_mday));
+  Wire.write(decToBcd(t.tm_mon + 1));     // DS3231 months 1-12
+  Wire.write(decToBcd(t.tm_year % 100));
+  Wire.endTransmission();
+}
+
+void applyTimezone() {
+  if (timezonePosix.length() > 0) {
+    setenv("TZ", timezonePosix.c_str(), 1);
+    tzset();
+    Serial.printf("Timezone set: %s\n", timezonePosix.c_str());
+  } else {
+    setenv("TZ", "UTC0", 1);
+    tzset();
+    Serial.println("Timezone: UTC (not configured)");
   }
-  if (n < 1000) {
-    String result = String(ones[n / 100]) + " hundred";
-    if (n % 100 != 0) result += " " + numberToWords(n % 100);
-    return result;
+}
+
+void initRTC() {
+  Wire.begin(RTC_SDA, RTC_SCL);
+  Wire.beginTransmission(DS3231_ADDR);
+  if (Wire.endTransmission() == 0) {
+    rtcFound = true;
+    Serial.println("DS3231 RTC found");
+    struct tm t;
+    if (ds3231Read(t)) {
+      // DS3231 stores UTC — set system clock (TZ is still UTC at this point)
+      time_t epoch = mktime(&t);
+      struct timeval tv = { .tv_sec = epoch, .tv_usec = 0 };
+      settimeofday(&tv, NULL);
+      Serial.printf("System time set from RTC: %04d-%02d-%02d %02d:%02d:%02d UTC\n",
+                     t.tm_year + 1900, t.tm_mon + 1, t.tm_mday,
+                     t.tm_hour, t.tm_min, t.tm_sec);
+    } else {
+      Serial.println("DS3231 read failed (new/unprogrammed module?)");
+    }
+  } else {
+    Serial.println("DS3231 not found on I2C bus");
   }
-  // For very large numbers, just read digits
-  return String(n);
+}
+
+void syncNTP() {
+  if (WiFi.status() != WL_CONNECTED) return;
+  Serial.println("Starting NTP sync...");
+  configTime(0, 0, "pool.ntp.org", "time.nist.gov");
+  // Re-apply timezone — configTime can reset TZ internally
+  applyTimezone();
+  struct tm t;
+  int attempts = 0;
+  while (!getLocalTime(&t, 100) && attempts < 50) {
+    attempts++;
+  }
+  if (t.tm_year > 100) {  // Year > 2000 means real time
+    ntpSynced = true;
+    char buf[32];
+    strftime(buf, sizeof(buf), "%Y-%m-%d %H:%M:%S", &t);
+    Serial.printf("NTP synced: %s (local)\n", buf);
+    if (rtcFound) {
+      time_t now;
+      time(&now);
+      struct tm utc;
+      gmtime_r(&now, &utc);
+      ds3231Write(utc);
+      Serial.println("RTC updated from NTP");
+    }
+  } else {
+    Serial.println("NTP sync failed (timeout)");
+  }
 }
 
 // Convert Open-Meteo weather code to description
@@ -401,60 +599,96 @@ int extractJsonInt(const String& json, const String& key) {
   return json.substring(idx, endIdx).toInt();
 }
 
-void speakWeather() {
-  String report;
+// Cached weather report — only fetched once every 15 minutes
+String cachedWeatherReport;
+unsigned long weatherFetchTime = 0;
+#define WEATHER_CACHE_MS 900000  // 15 minutes
 
+String fetchWeatherReport() {
   if (WiFi.status() != WL_CONNECTED) {
     Serial.println("Weather: WiFi not connected");
-    report = "no wifi";
-  } else {
-    Serial.println("Fetching weather...");
-
-    // Build weather URL with stored coordinates
-    String weatherURL = "http://api.open-meteo.com/v1/forecast?latitude=" + String(weatherLat, 4) +
-                        "&longitude=" + String(weatherLon, 4) +
-                        "&current=temperature_2m,relative_humidity_2m,apparent_temperature,weather_code,wind_speed_10m&temperature_unit=celsius&wind_speed_unit=kmh";
-    Serial.printf("Weather URL: %s\n", weatherURL.c_str());
-
-    HTTPClient http;
-    http.begin(weatherURL.c_str());
-    http.setTimeout(10000);
-
-    int httpCode = http.GET();
-
-    if (httpCode == 200) {
-      String json = http.getString();
-      Serial.printf("Weather raw: %s\n", json.c_str());
-
-      // Extract the "current" section (skips "current_units" which has string values)
-      String current = extractCurrentSection(json);
-      Serial.printf("Current section: %s\n", current.c_str());
-
-      // Parse Open-Meteo JSON response
-      float temp = extractJsonFloat(current, "temperature_2m");
-      float feelsLike = extractJsonFloat(current, "apparent_temperature");
-      int humidity = (int)extractJsonFloat(current, "relative_humidity_2m");
-      float wind = extractJsonFloat(current, "wind_speed_10m");
-      int weatherCode = extractJsonInt(current, "weather_code");
-
-      // Build spoken weather report with natural number pronunciation
-      report = weatherCodeToText(weatherCode);
-      report += ", " + numberToWords((int)round(temp)) + " degrees";
-      report += ", feels like " + numberToWords((int)round(feelsLike)) + " degrees";
-      report += ", humidity " + numberToWords(humidity) + " percent";
-      report += ", winds " + numberToWords((int)round(wind)) + " K P H";
-    } else {
-      Serial.printf("Weather fetch failed: %d\n", httpCode);
-      report = "weather unavailable";
-    }
-
-    http.end();
+    return "no wifi";
   }
 
+  // Use cached report if still fresh
+  if (cachedWeatherReport.length() > 0 && millis() - weatherFetchTime < WEATHER_CACHE_MS) {
+    Serial.println("Weather: using cached report");
+    return cachedWeatherReport;
+  }
+
+  Serial.println("Fetching weather...");
+
+  String weatherURL = "http://api.open-meteo.com/v1/forecast?latitude=" + String(weatherLat, 4) +
+                      "&longitude=" + String(weatherLon, 4) +
+                      "&current=temperature_2m,relative_humidity_2m,apparent_temperature,weather_code,wind_speed_10m&temperature_unit=celsius&wind_speed_unit=kmh";
+  Serial.printf("Weather URL: %s\n", weatherURL.c_str());
+
+  HTTPClient http;
+  http.begin(weatherURL.c_str());
+  http.setTimeout(10000);
+
+  int httpCode = http.GET();
+  String report;
+
+  if (httpCode == 200) {
+    String json = http.getString();
+    Serial.printf("Weather raw: %s\n", json.c_str());
+
+    String current = extractCurrentSection(json);
+    Serial.printf("Current section: %s\n", current.c_str());
+
+    float temp = extractJsonFloat(current, "temperature_2m");
+    float feelsLike = extractJsonFloat(current, "apparent_temperature");
+    int humidity = (int)extractJsonFloat(current, "relative_humidity_2m");
+    float wind = extractJsonFloat(current, "wind_speed_10m");
+    int weatherCode = extractJsonInt(current, "weather_code");
+
+    // eSpeak handles number pronunciation natively
+    report = weatherCodeToText(weatherCode);
+    report += ", " + String((int)round(temp)) + " degrees";
+    report += ", feels like " + String((int)round(feelsLike)) + " degrees";
+    report += ", humidity " + String(humidity) + " percent";
+    report += ", winds " + String((int)round(wind)) + " kilometers per hour";
+
+    cachedWeatherReport = report;
+    weatherFetchTime = millis();
+  } else {
+    Serial.printf("Weather fetch failed: %d\n", httpCode);
+    // If we have a stale cache, use it rather than saying "unavailable"
+    if (cachedWeatherReport.length() > 0) {
+      Serial.println("Weather: using stale cached report");
+      report = cachedWeatherReport;
+    } else {
+      report = "weather unavailable";
+    }
+  }
+
+  http.end();
+  return report;
+}
+
+void speakPreMessage() {
+  if (preMessage.length() > 0) {
+    String expanded = expandMacros(preMessage);
+    sayText(expanded.c_str());
+  }
+}
+
+void speakPostMessage() {
+  if (postMessage.length() > 0) {
+    String expanded = expandMacros(postMessage);
+    sayText(expanded.c_str());
+  }
+}
+
+void speakWeather() {
+  String report = fetchWeatherReport();
   Serial.printf("Weather report: %s\n", report.c_str());
   pttOn();
   delay(600);
-  sayText(report.c_str());
+  speakPreMessage();
+  sayText(("Weather report, " + report).c_str());
+  speakPostMessage();
   delay(1000);
   pttOff();
 }
@@ -503,6 +737,45 @@ void handleRoot() {
   html += "<label>Voice Volume (0-100%):</label><input name='samvol' type='number' min='0' max='100' value='" + String(samVolumePercent) + "'>";
   html += "<label>Tone Volume (0-100%):</label><input name='tonevol' type='number' min='0' max='100' value='" + String(toneVolumePercent) + "'>";
 
+  // Pre/post messages
+  html += "<h2>Message Wrapping</h2>";
+  html += "<label>Pre-message (spoken before every transmission):</label>";
+  html += "<textarea name='premsg' rows='2' style='width:100%'>" + preMessage + "</textarea>";
+  html += "<label>Post-message (spoken after every transmission):</label>";
+  html += "<textarea name='postmsg' rows='2' style='width:100%'>" + postMessage + "</textarea>";
+  html += "<details><summary>Available macros</summary>";
+  html += "<code>{time}</code> 24h time, ";
+  html += "<code>{time12}</code> 12h time, ";
+  html += "<code>{date}</code> date, ";
+  html += "<code>{day}</code> weekday, ";
+  html += "<code>{hour}</code> hour, ";
+  html += "<code>{minute}</code> minute, ";
+  html += "<code>{battery}</code> battery %, ";
+  html += "<code>{voltage}</code> battery volts, ";
+  html += "<code>{slot}</code> next slot #, ";
+  html += "<code>{slots_used}</code> used slots, ";
+  html += "<code>{slots_total}</code> total slots, ";
+  html += "<code>{freq}</code> frequency, ";
+  html += "<code>{uptime}</code> uptime, ";
+  html += "<code>{ip}</code> IP address";
+  html += "</details>";
+
+  // DTMF # message
+  html += "<h2>DTMF # Message</h2>";
+  html += "<label>Text to speak on DTMF # (empty to disable):</label>";
+  html += "<textarea name='hashmsg' rows='3' style='width:100%'>" + dtmfHashMessage + "</textarea>";
+
+  // Time & timezone
+  html += "<h2>Time &amp; Timezone</h2>";
+  html += "<div id='deviceTime' style='padding:8px;background:#eee;margin:5px 0;font-family:monospace;'></div>";
+  html += "<label>Timezone (POSIX TZ string):</label>";
+  html += "<input name='tz' id='tzInput' value='" + timezonePosix + "' placeholder='EST5EDT,M3.2.0,M11.1.0' style='width:100%'>";
+  html += "<button type='button' onclick='detectTZ()'>Detect From Browser</button>";
+  html += "<span id='tzStatus'></span><br>";
+  html += "<label>Set Time (local):</label>";
+  html += "<input name='manualtime' id='manualTime' placeholder='2025-06-15 14:30:00' style='width:60%'>";
+  html += "<button type='button' onclick='setBrowserTime()'>Use Browser Time</button>";
+
   // Testing mode
   html += "<h2>Mode</h2>";
   html += "<label><input type='checkbox' name='testmode' value='1'" + String(testingMode ? " checked" : "") + "> Testing Mode (PTT disabled)</label>";
@@ -524,6 +797,56 @@ void handleRoot() {
   html += "document.getElementById('locStatus').innerHTML='Found: '+d.city+', '+d.country;";
   html += "}).catch(e=>{document.getElementById('locStatus').innerHTML='Detection failed';});";
   html += "}";
+
+  // Timezone detection (IANA -> POSIX mapping)
+  html += "function detectTZ(){";
+  html += "var iana=Intl.DateTimeFormat().resolvedOptions().timeZone;";
+  html += "var m={'America/New_York':'EST5EDT,M3.2.0,M11.1.0',";
+  html += "'America/Chicago':'CST6CDT,M3.2.0,M11.1.0',";
+  html += "'America/Denver':'MST7MDT,M3.2.0,M11.1.0',";
+  html += "'America/Los_Angeles':'PST8PDT,M3.2.0,M11.1.0',";
+  html += "'America/Toronto':'EST5EDT,M3.2.0,M11.1.0',";
+  html += "'America/Vancouver':'PST8PDT,M3.2.0,M11.1.0',";
+  html += "'America/Edmonton':'MST7MDT,M3.2.0,M11.1.0',";
+  html += "'America/Winnipeg':'CST6CDT,M3.2.0,M11.1.0',";
+  html += "'America/Halifax':'AST4ADT,M3.2.0,M11.1.0',";
+  html += "'America/St_Johns':'NST3:30NDT,M3.2.0/0:01,M11.1.0/0:01',";
+  html += "'Europe/London':'GMT0BST,M3.5.0/1,M10.5.0',";
+  html += "'Europe/Berlin':'CET-1CEST,M3.5.0,M10.5.0/3',";
+  html += "'Europe/Paris':'CET-1CEST,M3.5.0,M10.5.0/3',";
+  html += "'Australia/Sydney':'AEST-10AEDT,M10.1.0,M4.1.0/3',";
+  html += "'Pacific/Auckland':'NZST-12NZDT,M9.5.0,M4.1.0/3',";
+  html += "'Asia/Tokyo':'JST-9',";
+  html += "'Asia/Shanghai':'CST-8',";
+  html += "'Asia/Kolkata':'IST-5:30',";
+  html += "'UTC':'UTC0'};";
+  html += "var p=m[iana]||'';";
+  html += "if(p){document.getElementById('tzInput').value=p;";
+  html += "document.getElementById('tzStatus').innerHTML=' '+iana+' &rarr; '+p;}";
+  html += "else{document.getElementById('tzStatus').innerHTML=' \"'+iana+'\" not mapped. Enter POSIX string manually.';}";
+  html += "}";
+
+  // Set time from browser
+  html += "function setBrowserTime(){";
+  html += "var d=new Date();";
+  html += "var s=d.getFullYear()+'-'+('0'+(d.getMonth()+1)).slice(-2)+'-'+('0'+d.getDate()).slice(-2)+' '";
+  html += "+('0'+d.getHours()).slice(-2)+':'+('0'+d.getMinutes()).slice(-2)+':'+('0'+d.getSeconds()).slice(-2);";
+  html += "var tz=document.getElementById('tzInput').value;";
+  html += "fetch('/settime',{method:'POST',headers:{'Content-Type':'application/x-www-form-urlencoded'},";
+  html += "body:'time='+encodeURIComponent(s)+'&tz='+encodeURIComponent(tz)})";
+  html += ".then(r=>r.json()).then(d=>{if(d.ok)document.getElementById('manualTime').value='Set: '+s;});";
+  html += "}";
+
+  // Live clock display
+  html += "function updateClock(){";
+  html += "fetch('/status').then(r=>r.json()).then(d=>{";
+  html += "var s='Device: '+(d.time||'not set');";
+  html += "if(d.rtc)s+=' | RTC: OK';else s+=' | RTC: not found';";
+  html += "if(d.ntp)s+=' | NTP: synced';";
+  html += "document.getElementById('deviceTime').innerHTML=s;";
+  html += "}).catch(e=>{});}";
+  html += "setInterval(updateClock,1000);updateClock();";
+
   html += "</script>";
 
   html += "</body></html>";
@@ -576,8 +899,35 @@ void handleSave() {
     preferences.putInt("tonevol", constrain(newToneVol.toInt(), 0, 100));
   }
   preferences.putBool("testmode", newTestMode);
+  preferences.putString("hashmsg", server.arg("hashmsg"));
+  preferences.putString("premsg", server.arg("premsg"));
+  preferences.putString("postmsg", server.arg("postmsg"));
+  if (server.hasArg("tz")) {
+    preferences.putString("tz", server.arg("tz"));
+  }
 
   preferences.end();
+
+  // Handle manual time set before reboot (write to DS3231 so it persists)
+  String manualTime = server.arg("manualtime");
+  if (manualTime.length() >= 19 && rtcFound) {
+    // Apply new TZ first so mktime interprets correctly
+    String newTZ = server.arg("tz");
+    if (newTZ.length() > 0) { setenv("TZ", newTZ.c_str(), 1); tzset(); }
+    struct tm t = {};
+    t.tm_year = manualTime.substring(0, 4).toInt() - 1900;
+    t.tm_mon  = manualTime.substring(5, 7).toInt() - 1;
+    t.tm_mday = manualTime.substring(8, 10).toInt();
+    t.tm_hour = manualTime.substring(11, 13).toInt();
+    t.tm_min  = manualTime.substring(14, 16).toInt();
+    t.tm_sec  = manualTime.substring(17, 19).toInt();
+    t.tm_isdst = -1;
+    time_t epoch = mktime(&t);
+    struct tm utc;
+    gmtime_r(&epoch, &utc);
+    ds3231Write(utc);
+    Serial.println("Manual time written to RTC");
+  }
 
   String html = "<!DOCTYPE html><html><head><title>Saved</title>";
   html += "<meta http-equiv='refresh' content='3;url=/'></head>";
@@ -594,9 +944,53 @@ void handleStatus() {
   json += "\"ip\":\"" + WiFi.localIP().toString() + "\",";
   json += "\"ssid\":\"" + wifiSSID + "\",";
   json += "\"rssi\":" + String(WiFi.RSSI()) + ",";
-  json += "\"ap_mode\":" + String(apMode ? "true" : "false");
+  json += "\"ap_mode\":" + String(apMode ? "true" : "false") + ",";
+  struct tm t;
+  if (getLocalTime(&t, 0)) {
+    char timeBuf[32];
+    strftime(timeBuf, sizeof(timeBuf), "%Y-%m-%d %H:%M:%S", &t);
+    json += "\"time\":\"" + String(timeBuf) + "\",";
+  } else {
+    json += "\"time\":\"not set\",";
+  }
+  json += "\"tz\":\"" + timezonePosix + "\",";
+  json += "\"rtc\":" + String(rtcFound ? "true" : "false") + ",";
+  json += "\"ntp\":" + String(ntpSynced ? "true" : "false");
   json += "}";
   server.send(200, "application/json", json);
+}
+
+void handleSetTime() {
+  String timeStr = server.arg("time");
+  String tzStr = server.arg("tz");
+  if (tzStr.length() > 0) {
+    timezonePosix = tzStr;
+    applyTimezone();
+    preferences.begin("parrot", false);
+    preferences.putString("tz", tzStr);
+    preferences.end();
+  }
+  if (timeStr.length() >= 19) {
+    struct tm t = {};
+    t.tm_year = timeStr.substring(0, 4).toInt() - 1900;
+    t.tm_mon  = timeStr.substring(5, 7).toInt() - 1;
+    t.tm_mday = timeStr.substring(8, 10).toInt();
+    t.tm_hour = timeStr.substring(11, 13).toInt();
+    t.tm_min  = timeStr.substring(14, 16).toInt();
+    t.tm_sec  = timeStr.substring(17, 19).toInt();
+    t.tm_isdst = -1;
+    time_t epoch = mktime(&t);  // interprets as local per TZ env
+    struct timeval tv = { .tv_sec = epoch, .tv_usec = 0 };
+    settimeofday(&tv, NULL);
+    if (rtcFound) {
+      struct tm utc;
+      gmtime_r(&epoch, &utc);
+      ds3231Write(utc);
+    }
+    server.send(200, "application/json", "{\"ok\":true}");
+  } else {
+    server.send(400, "application/json", "{\"ok\":false,\"error\":\"Invalid time format\"}");
+  }
 }
 
 void handlePins() {
@@ -683,6 +1077,10 @@ void initWiFi() {
 
   // Testing mode (default ON for safety)
   testingMode = preferences.getBool("testmode", true);
+  dtmfHashMessage = preferences.getString("hashmsg", "");
+  preMessage = preferences.getString("premsg", "");
+  postMessage = preferences.getString("postmsg", "");
+  timezonePosix = preferences.getString("tz", "");
 
   preferences.end();
 
@@ -740,6 +1138,7 @@ void initWiFi() {
   server.on("/pins", handlePins);
   server.on("/savepins", HTTP_POST, handleSavePins);
   server.on("/status", handleStatus);
+  server.on("/settime", HTTP_POST, handleSetTime);
 
   // Captive portal - redirect all unknown URLs to root
   server.onNotFound([]() {
@@ -912,7 +1311,7 @@ void recordAudioSamples() {
     // Check the most recent samples for DTMF
     int startIdx = max(0, recordIndex - DTMF_BLOCK_SIZE);
     char dtmf = detectDTMF(&audioBuffer[startIdx], DTMF_BLOCK_SIZE);
-    if ((dtmf >= '1' && dtmf <= '9') || dtmf == '*') {
+    if ((dtmf >= '1' && dtmf <= '9') || dtmf == '*' || dtmf == '#') {
       detectedDTMF = dtmf;
       Serial.printf("*** DTMF %c detected ***\n", dtmf);
     }
@@ -1044,6 +1443,8 @@ void playbackWithFeedback() {
   pttOn();
   delay(300);  // PTT tail delay
 
+  speakPreMessage();
+
   // Play back recorded audio via I2S
   for (int i = 0; i < recordIndex; i += 256) {
     int chunkSize = min(256, recordIndex - i);
@@ -1054,6 +1455,8 @@ void playbackWithFeedback() {
 
   // Generate quality feedback
   generateQualityFeedback();
+
+  speakPostMessage();
 
   delay(300);  // Final tail
 
@@ -1081,6 +1484,14 @@ void setup() {
 
   // Initialize WiFi and load preferences
   initWiFi();
+
+  // Initialize RTC first (TZ is still UTC, so mktime reads DS3231 correctly)
+  initRTC();
+  // Now apply timezone and sync NTP
+  applyTimezone();
+  if (!apMode) {
+    syncNTP();
+  }
 
   // Pin setup (using loaded preferences)
   pinMode(pinPTT, OUTPUT);
@@ -1123,17 +1534,21 @@ void setup() {
   initializeSA868();
 
   // Initialize eSpeak NG speech synthesis
+  // Register empty config file — eSpeak's LoadConfig() tries to open /mem/data/config
+  // which doesn't exist in the in-memory PROGMEM filesystem, causing a harmless warning.
+  espeak.add("/mem/data/config", "", 0);
   if (espeak.begin()) {
     espeak.setVoice("en");
     espeak.setRate(160);  // Default 175, range 80-450
+    espeak.setFlags(espeakCHARS_AUTO | espeakPHONEMES);  // Enable inline [[ ]] phoneme codes
     Serial.println("eSpeak NG initialized");
   } else {
     Serial.println("ERROR: eSpeak NG init failed!");
   }
 
   // Ignore squelch pin for 10 seconds after boot (RF noise during startup)
-  wifiReadyTime = max(wifiReadyTime, millis() + 10000);
-
+  wifiReadyTime = max(wifiReadyTime, millis() + 5000);
+  while (wifiReadyTime > millis()) vTaskDelay(1);
   Serial.println("Ready for radio checks!");
 }
 
@@ -1176,7 +1591,15 @@ void loop() {
     stopRecording();
     delay(2000);
 
-    if (detectedDTMF == '*') {
+    if (detectedDTMF == '#' && dtmfHashMessage.length() > 0) {
+      // DTMF # - speak configurable message with macro expansion
+      String expanded = expandMacros(dtmfHashMessage);
+      pttOn();
+      delay(600);
+      sayText(expanded.c_str());
+      delay(1000);
+      pttOff();
+    } else if (detectedDTMF == '*') {
       // DTMF * - speak weather (handles PTT and speech internally)
       speakWeather();
     } else if (detectedDTMF == '9') {
@@ -1200,7 +1623,14 @@ void loop() {
     stopRecording();
     delay(2000);
 
-    if (detectedDTMF == '*') {
+    if (detectedDTMF == '#' && dtmfHashMessage.length() > 0) {
+      String expanded = expandMacros(dtmfHashMessage);
+      pttOn();
+      delay(600);
+      sayText(expanded.c_str());
+      delay(1000);
+      pttOff();
+    } else if (detectedDTMF == '*') {
       speakWeather();
     } else if (detectedDTMF == '9') {
       playRadioTest();
@@ -1218,10 +1648,16 @@ void loop() {
   static unsigned long lastBattCheck = 0;
   if (pinVBAT >= 0 && !recording && !nowReceiving && millis() - lastBattCheck > VBAT_CHECK_INTERVAL) {
     lastBattCheck = millis();
-    int raw = analogRead(pinVBAT);
-    float voltage = (raw / 4095.0) * 3.3 * VBAT_DIVIDER;
+    long sum = 0;
+    for (int i = 0; i < 10; i++) {
+      sum += analogReadMilliVolts(pinVBAT);
+      delay(5);
+    }
+    float voltage = (sum / 10) / 1000.0 * VBAT_DIVIDER;
     if (voltage > VBAT_LIPO_MIN && voltage < VBAT_LIPO_MAX) {
       int percent = constrain((int)((voltage - VBAT_LIPO_MIN) / (4.2 - VBAT_LIPO_MIN) * 100), 0, 100);
+      lastBatteryV = voltage;
+      lastBatteryPct = percent;
       Serial.printf("Battery: %.2fV (%d%%)\n", voltage, percent);
     }
   }
