@@ -10,16 +10,19 @@ These are overwritten as new ones come in, as a circular buffer (so if your reco
 
 Recordings are flushed on reboot - temporary memory only, except for the embedded test file. 
 
-DTMF 1..9 will recall that particular radio test. 
+You can now specify pre/post message strings for the TTS. These support various variable expansions. 
+
+DTMF 1..8 will recall that particular radio test. 
 DTMF 9 will transmit a clean audio file (encoded in the firmware) so you can see how you're receiving a clean transmit.
 DTMF * will transmit a read of your local weather conditions.
-DTMF A,B,C,D,# are tet to be defined.
+DTMF # will transmit a customized message. (no pre/post messsages for this one)
+DTMF A,B,C,D are yet to be defined. (If you didn't know there's A,B,C,D in DTMF, you're too young.)
 
 TODOs include confirming the radio debug message logic, doing real range testing, scheduled "if you hear this your walkie is working" messages, and likely other stupid things. Also likely add Ethernet support so you don't have two radio next to each other.
 
-There is now a webserver onboard. Preferences are stored via the "Preferences" module so unless you entirely erase the board, settings are safe. It'll come up in "safe mode" so it doesn't transmit.
+There is now a webserver onboard. Preferences are stored via the "Preferences" module so unless you entirely erase the board, settings are safe. It'll come up in "safe mode" so it doesn't transmit. WiFi is set to the lowest power and also sleep mode is enabled to help reduce RF interference.
 
-AP mode will come up as "RadioParrot" and the password is "parrot123"
+AP mode for configuration will come up as "RadioParrot" and the password is "parrot123"
 
 _**This will need external power as the 5v rail on an ESP32 isn't up to the task**_
 
