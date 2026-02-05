@@ -7,8 +7,7 @@
 #include <WebServer.h>
 #include <DNSServer.h>
 #include <Preferences.h>
-#include <AudioOutput.h>
-#include <ESP8266SAM.h>
+#include "espeak.h"
 #include <radio_test_audio.h>
 
 // I2S port
@@ -22,7 +21,7 @@
 HardwareSerial SA868(2);  // UART2
 
 // Recording parameters
-#define SAMPLE_RATE 22050  // Match SAM's native rate
+#define SAMPLE_RATE 22050  // eSpeak NG native rate
 #define MAX_RECORDING_SECONDS 10
 #define MAX_SAMPLES (SAMPLE_RATE * MAX_RECORDING_SECONDS)
 // Audio volumes are configurable via web interface (0-100%)
@@ -37,6 +36,8 @@ HardwareSerial SA868(2);  // UART2
 
 // WiFi state
 bool apMode = false;
+unsigned long wifiReadyTime = 0;  // millis() when WiFi settled, ignore AudioOn until then
+#define WIFI_SETTLE_MS 5000       // Ignore squelch pin for this long after WiFi connects
 WebServer server(80);
 DNSServer dnsServer;
 Preferences preferences;
@@ -54,7 +55,7 @@ String radioRxCTCSS;   // e.g. "0000" (none) or "0001"-"0038"
 int radioSquelch;      // 0-8
 
 // Audio settings (stored in Preferences, 0-100%)
-int samVolumePercent;    // SAM speech volume
+int samVolumePercent;    // TTS speech volume (kept as samvol for preferences compat)
 int toneVolumePercent;   // Beep/tone volume
 
 // Pin configuration (stored in Preferences)
@@ -75,9 +76,9 @@ int16_t* audioBuffer = nullptr;
 int recordIndex = 0;
 bool recording = false;
 
-// SAM speech synthesis
-int16_t samBuffer[512];
-int samBufferIndex = 0;
+// TTS output buffer
+int16_t ttsBuffer[512];
+int ttsBufferIndex = 0;
 
 // Signal quality tracking
 int peakRSSI = 0;
@@ -264,7 +265,8 @@ void playRadioTest() {
   Serial.println("Radio test complete!");
 }
 
-String sanitizeForSAM(String text) {
+// Text sanitization for TTS
+String sanitizeForTTS(String text) {
   // Remove wind direction arrows
   text.replace("↑", "");
   text.replace("↓", "");
@@ -281,7 +283,7 @@ String sanitizeForSAM(String text) {
 
   // Other units
   text.replace("%", " percent");
-  text.replace("km/h", "K P H");
+  text.replace("km/h", " kilometers per hour");
 
   // Clean up double spaces
   while (text.indexOf("  ") >= 0) {
@@ -378,56 +380,61 @@ int extractJsonInt(const String& json, const String& key) {
 }
 
 void speakWeather() {
+  String report;
+
   if (WiFi.status() != WL_CONNECTED) {
     Serial.println("Weather: WiFi not connected");
-    sayText("no wifi");
-    return;
-  }
-
-  Serial.println("Fetching weather...");
-
-  // Build weather URL with stored coordinates
-  String weatherURL = "http://api.open-meteo.com/v1/forecast?latitude=" + String(weatherLat, 4) +
-                      "&longitude=" + String(weatherLon, 4) +
-                      "&current=temperature_2m,relative_humidity_2m,apparent_temperature,weather_code,wind_speed_10m&temperature_unit=celsius&wind_speed_unit=kmh";
-  Serial.printf("Weather URL: %s\n", weatherURL.c_str());
-
-  HTTPClient http;
-  http.begin(weatherURL.c_str());
-  http.setTimeout(10000);
-
-  int httpCode = http.GET();
-
-  if (httpCode == 200) {
-    String json = http.getString();
-    Serial.printf("Weather raw: %s\n", json.c_str());
-
-    // Extract the "current" section (skips "current_units" which has string values)
-    String current = extractCurrentSection(json);
-    Serial.printf("Current section: %s\n", current.c_str());
-
-    // Parse Open-Meteo JSON response
-    float temp = extractJsonFloat(current, "temperature_2m");
-    float feelsLike = extractJsonFloat(current, "apparent_temperature");
-    int humidity = (int)extractJsonFloat(current, "relative_humidity_2m");
-    float wind = extractJsonFloat(current, "wind_speed_10m");
-    int weatherCode = extractJsonInt(current, "weather_code");
-
-    // Build spoken weather report with natural number pronunciation
-    String report = weatherCodeToText(weatherCode);
-    report += ", " + numberToWords((int)round(temp)) + " degrees";
-    report += ", feels like " + numberToWords((int)round(feelsLike)) + " degrees";
-    report += ", humidity " + numberToWords(humidity) + " percent";
-    report += ", winds " + numberToWords((int)round(wind)) + " K P H";
-
-    Serial.printf("Weather report: %s\n", report.c_str());
-    sayText(report.c_str());
+    report = "no wifi";
   } else {
-    Serial.printf("Weather fetch failed: %d\n", httpCode);
-    sayText("weather unavailable");
+    Serial.println("Fetching weather...");
+
+    // Build weather URL with stored coordinates
+    String weatherURL = "http://api.open-meteo.com/v1/forecast?latitude=" + String(weatherLat, 4) +
+                        "&longitude=" + String(weatherLon, 4) +
+                        "&current=temperature_2m,relative_humidity_2m,apparent_temperature,weather_code,wind_speed_10m&temperature_unit=celsius&wind_speed_unit=kmh";
+    Serial.printf("Weather URL: %s\n", weatherURL.c_str());
+
+    HTTPClient http;
+    http.begin(weatherURL.c_str());
+    http.setTimeout(10000);
+
+    int httpCode = http.GET();
+
+    if (httpCode == 200) {
+      String json = http.getString();
+      Serial.printf("Weather raw: %s\n", json.c_str());
+
+      // Extract the "current" section (skips "current_units" which has string values)
+      String current = extractCurrentSection(json);
+      Serial.printf("Current section: %s\n", current.c_str());
+
+      // Parse Open-Meteo JSON response
+      float temp = extractJsonFloat(current, "temperature_2m");
+      float feelsLike = extractJsonFloat(current, "apparent_temperature");
+      int humidity = (int)extractJsonFloat(current, "relative_humidity_2m");
+      float wind = extractJsonFloat(current, "wind_speed_10m");
+      int weatherCode = extractJsonInt(current, "weather_code");
+
+      // Build spoken weather report with natural number pronunciation
+      report = weatherCodeToText(weatherCode);
+      report += ", " + numberToWords((int)round(temp)) + " degrees";
+      report += ", feels like " + numberToWords((int)round(feelsLike)) + " degrees";
+      report += ", humidity " + numberToWords(humidity) + " percent";
+      report += ", winds " + numberToWords((int)round(wind)) + " K P H";
+    } else {
+      Serial.printf("Weather fetch failed: %d\n", httpCode);
+      report = "weather unavailable";
+    }
+
+    http.end();
   }
 
-  http.end();
+  Serial.printf("Weather report: %s\n", report.c_str());
+  pttOn();
+  delay(600);
+  sayText(report.c_str());
+  delay(1000);
+  pttOff();
 }
 
 // Web server handlers
@@ -682,6 +689,7 @@ void initWiFi() {
     if (WiFi.status() == WL_CONNECTED) {
       Serial.printf("WiFi connected! IP: http://%s\n", WiFi.localIP().toString().c_str());
       apMode = false;
+      wifiReadyTime = millis() + WIFI_SETTLE_MS;
     } else {
       // Connection failed, start AP mode
       Serial.println("WiFi connection failed, starting AP mode...");
@@ -694,9 +702,10 @@ void initWiFi() {
     }
   }
 
-  // Set WiFi to lowest TX power to minimize interference with radio
+  // Minimize WiFi RF interference with radio
   WiFi.setTxPower(WIFI_POWER_MINUS_1dBm);
-  Serial.println("WiFi TX power set to minimum (-1 dBm)");
+  WiFi.setSleep(true);  // Modem sleep between beacons
+  Serial.println("WiFi TX power set to minimum, modem sleep enabled");
 
   // Start web server in either mode
   server.on("/", handleRoot);
@@ -816,6 +825,8 @@ int getRSSI() {
 }
 
 bool isReceiving() {
+  // Ignore squelch pin in AP mode or while WiFi is settling (RF noise causes false triggers)
+  if (apMode || millis() < wifiReadyTime) return false;
   // Audio ON pin goes LOW when receiving
   return digitalRead(pinAudioOn) == LOW;
 }
@@ -893,44 +904,51 @@ void i2sWrite(int16_t* data, size_t samples) {
   i2s_write(I2S_PORT, data, samples * sizeof(int16_t), &bytesWritten, portMAX_DELAY);
 }
 
-// SAM audio output class
-class SAMAudioOutput : public AudioOutput {
+// eSpeak audio output — Print subclass that feeds our I2S
+class TTSOutput : public Print {
 public:
-  SAMAudioOutput() {}
-
-  bool begin() { return true; }
-
-  bool ConsumeSample(int16_t sample[2]) {
-    // No downsampling needed - I2S runs at 22050Hz to match SAM
-    int16_t mono = (int16_t)(sample[0] * samVolumePercent / 100.0f);
-    samBuffer[samBufferIndex++] = mono;
-
-    if (samBufferIndex >= 512) {
-      i2sWrite(samBuffer, samBufferIndex);
-      samBufferIndex = 0;
-    }
-    return true;
+  size_t write(uint8_t b) override {
+    return write(&b, 1);
   }
 
-  bool stop() {
-    // Flush remaining samples
-    if (samBufferIndex > 0) {
-      i2sWrite(samBuffer, samBufferIndex);
-      samBufferIndex = 0;
+  size_t write(const uint8_t *buffer, size_t size) override {
+    // eSpeak writes raw 16-bit PCM samples
+    size_t i = 0;
+    while (i < size) {
+      // Accumulate bytes into int16_t samples
+      if (i + 1 < size) {
+        int16_t sample = (int16_t)(buffer[i] | (buffer[i + 1] << 8));
+        sample = (int16_t)(sample * samVolumePercent / 100.0f);
+        ttsBuffer[ttsBufferIndex++] = sample;
+        i += 2;
+
+        if (ttsBufferIndex >= 512) {
+          i2sWrite(ttsBuffer, ttsBufferIndex);
+          ttsBufferIndex = 0;
+        }
+      } else {
+        i++;  // Odd trailing byte, skip
+      }
     }
-    return true;
+    return size;
+  }
+
+  void flush() {
+    if (ttsBufferIndex > 0) {
+      i2sWrite(ttsBuffer, ttsBufferIndex);
+      ttsBufferIndex = 0;
+    }
   }
 };
 
-SAMAudioOutput samOut;
-ESP8266SAM* sam = nullptr;
+TTSOutput ttsOut;
+ESpeak espeak(ttsOut);
 
 void sayText(const char* text) {
-  Serial.printf("SAM: %s\n", text);
-  if (sam) {
-    sam->Say(&samOut, text);
-    samOut.stop();  // Flush buffer
-  }
+  String processed = sanitizeForTTS(String(text));
+  Serial.printf("TTS: %s\n", processed.c_str());
+  espeak.say(processed.c_str());
+  ttsOut.flush();
 }
 
 void playTone(int frequency, int duration) {
@@ -988,7 +1006,7 @@ void generateQualityFeedback() {
 
   if (clipCount > CLIP_COUNT_WARN) {
     delay(300);
-    playVoiceMessage("audio distorted, reduce volume");
+    playVoiceMessage("audio clipping, reduce volume");
   }
 }
 
@@ -1026,7 +1044,6 @@ void setup() {
 
   Serial.begin(115200);
   SA868.begin(9600, SERIAL_8N1, 21, 22);
-  while (SA868.available()) SA868.read();  // Clear receive buffer
 
   Serial.println("ESP32 Radio Parrot Starting...");
 
@@ -1068,14 +1085,23 @@ void setup() {
   // Initialize I2S
   initI2S();
 
-  delay(2000);  // Let module boot
+  delay(500);  // Let module boot
 
   // Initialize SA868
+  while (SA868.available()) SA868.read();  // Clear receive buffer
   initializeSA868();
 
-  // Initialize SAM speech synthesis
-  sam = new ESP8266SAM();
-  Serial.println("SAM initialized");
+  // Initialize eSpeak NG speech synthesis
+  if (espeak.begin()) {
+    espeak.setVoice("en");
+    espeak.setRate(160);  // Default 175, range 80-450
+    Serial.println("eSpeak NG initialized");
+  } else {
+    Serial.println("ERROR: eSpeak NG init failed!");
+  }
+
+  // Ignore squelch pin for 10 seconds after boot (RF noise during startup)
+  wifiReadyTime = max(wifiReadyTime, millis() + 10000);
 
   Serial.println("Ready for radio checks!");
 }
@@ -1120,12 +1146,8 @@ void loop() {
     delay(2000);
 
     if (detectedDTMF == '*') {
-      // DTMF * - speak weather
-      pttOn();
-      delay(600);
+      // DTMF * - speak weather (handles PTT and speech internally)
       speakWeather();
-      delay(1000);  // Allow I2S buffer to drain
-      pttOff();
     } else if (detectedDTMF == '9') {
       // DTMF 9 - play embedded radio test audio
       playRadioTest();
@@ -1148,11 +1170,7 @@ void loop() {
     delay(2000);
 
     if (detectedDTMF == '*') {
-      pttOn();
-      delay(600);
       speakWeather();
-      delay(1000);  // Allow I2S buffer to drain
-      pttOff();
     } else if (detectedDTMF == '9') {
       playRadioTest();
     } else if (detectedDTMF >= '1' && detectedDTMF <= '8') {
