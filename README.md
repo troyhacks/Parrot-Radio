@@ -12,11 +12,11 @@ Recordings are flushed on reboot - temporary memory only, except for the embedde
 
 You can now specify pre/post message strings for the TTS. These support various variable expansions. 
 
-DTMF 1..8 will recall that particular radio test. 
-DTMF 9 will transmit a clean audio file (encoded in the firmware) so you can see how you're receiving a clean transmit.
-DTMF * will transmit a read of your local weather conditions.
-DTMF # will transmit a customized message. (no pre/post messsages for this one)
-DTMF A,B,C,D are yet to be defined. (If you didn't know there's A,B,C,D in DTMF, you're too young.)
+* DTMF 1..8 will recall that particular radio test. 
+* DTMF 9 will transmit a clean audio file (encoded in the firmware) so you can see how you're receiving a clean transmit.
+* DTMF * will transmit a read of your local weather conditions.
+* DTMF # will transmit a customized message. (no pre/post messsages for this one)
+* DTMF A,B,C,D are yet to be defined. (If you didn't know there's A,B,C,D in DTMF, you're too young.)
 
 TODOs include confirming the radio debug message logic, doing real range testing, scheduled "if you hear this your walkie is working" messages, and likely other stupid things. Also likely add Ethernet support so you don't have two radio next to each other.
 
