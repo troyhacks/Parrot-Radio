@@ -1,4 +1,6 @@
-# Doing stupid tricks with the SA868 radio module from G-NiceRF
+# Doing stupid tricks with the SA868 radio module from NiceRF
+
+<img width="50%" height="50%" alt="A pirate parrot holding a fancy walkie-talkie" src="https://github.com/user-attachments/assets/26e68f07-50eb-4d0b-9f52-cfbfe3091408" />
 
 *Work in progress*, meant as an automated walkie-check system for events. 
 
@@ -18,6 +20,6 @@ And RF shielding. And a bunch of other I2S things for recording and playback, so
 
 Stuff gets weird when you have a high-gain antenna next to it. 
 
-Yes, the robot voice is terrible. TERRIBLE ON PURPOSE.
+~~Yes, the robot voice is terrible. TERRIBLE ON PURPOSE.~~ The robot voice is now... Mid-Atlantic?!? I dunno. I like it.
 
 
