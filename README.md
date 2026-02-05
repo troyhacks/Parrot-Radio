@@ -15,7 +15,11 @@ DTMF 9 will transmit a clean audio file (encoded in the firmware) so you can see
 DTMF * will transmit a read of your local weather conditions.
 DTMF A,B,C,D,# are tet to be defined.
 
-TODOs include confirming the radio debug message logic, doing real range testing, scheduled "if you hear this your walkie is working" messages, and likely other stupid things.
+TODOs include confirming the radio debug message logic, doing real range testing, scheduled "if you hear this your walkie is working" messages, and likely other stupid things. Also likely add Ethernet support so you don't have two radio next to each other.
+
+There is now a webserver onboard. Preferences are stored via the "Preferences" module so unless you entirely erase the board, settings are safe. It'll come up in "safe mode" so it doesn't transmit.
+
+AP mode will come up as "RadioParrot" and the password is "parrot123"
 
 _**This will need external power as the 5v rail on an ESP32 isn't up to the task**_
 
