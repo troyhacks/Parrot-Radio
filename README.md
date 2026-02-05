@@ -4,17 +4,20 @@
 
 *Work in progress*, meant as an automated walkie-check system for events. 
 
-It assumes 4MB of PSRAM, and stores your last 8 radio tests. You can recall them by sending DTMF 1..9 from your radio. 
+It assumes 4MB of PSRAM, and stores your last 8 radio tests. 
 
 These are overwritten as new ones come in, as a circular buffer (so if your recording is in #5, it'll be in #5 until it's overwritten.)
 
 Recordings are flushed on reboot - temporary memory only, except for the embedded test file. 
 
+DTMF 1..9 will recall that particular radio test. 
 DTMF 9 will transmit a clean audio file (encoded in the firmware) so you can see how you're receiving a clean transmit.
+DTMF * will transmit a read of your local weather conditions.
+DTMF A,B,C,D,# are tet to be defined.
 
-TODOs include confirming the radio debug message logic, doing real range testing, maybe weather/temperature sensor reports, scheduled "if you hear this your walkie is working" messages, and likely other stupid things.
+TODOs include confirming the radio debug message logic, doing real range testing, scheduled "if you hear this your walkie is working" messages, and likely other stupid things.
 
-_**This will likely need external power as the 5v rail on an ESP32 isn't up to the task**_
+_**This will need external power as the 5v rail on an ESP32 isn't up to the task**_
 
 And RF shielding. And a bunch of other I2S things for recording and playback, some caps and resistors, etc etc etc, likely some ferrite cores. 
 
