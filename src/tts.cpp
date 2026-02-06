@@ -60,8 +60,19 @@ String expandMacros(const String &text) {
     result.replace("{date}", buf);
     strftime(buf, sizeof(buf), "%H:%M", &t);
     result.replace("{time}", buf);
-    strftime(buf, sizeof(buf), "%I:%M %p", &t);
-    result.replace("{time12}", buf);
+    {
+      int hour12 = t.tm_hour % 12;
+      if (hour12 == 0) hour12 = 12;
+      const char* ampm = t.tm_hour < 12 ? "AM" : "PM";
+      if (t.tm_min == 0) {
+        snprintf(buf, sizeof(buf), "%d %s", hour12, ampm);
+      } else if (t.tm_min < 10) {
+        snprintf(buf, sizeof(buf), "%d oh %d %s", hour12, t.tm_min, ampm);
+      } else {
+        snprintf(buf, sizeof(buf), "%d %d %s", hour12, t.tm_min, ampm);
+      }
+      result.replace("{time12}", buf);
+    }
     strftime(buf, sizeof(buf), "%A", &t);
     result.replace("{day}", buf);
     strftime(buf, sizeof(buf), "%H", &t);
@@ -146,8 +157,8 @@ String sanitizeForTTS(String text) {
   text.replace("\xe2\x86\x96", "");  // ↖
 
   // Temperature units
-  text.replace("\xc2\xb0C", " degrees");  // °C
-  text.replace("\xc2\xb0F", " degrees");  // °F
+  text.replace("\xc2\xb0" "C", " degrees");  // °C
+  text.replace("\xc2\xb0" "F", " degrees");  // °F
 
   // Other units
   text.replace("%", " percent");
