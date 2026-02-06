@@ -41,6 +41,10 @@
 #define MAX_RECORDING_SECONDS 10
 #define MAX_SAMPLES (SAMPLE_RATE * MAX_RECORDING_SECONDS)
 
+// Minimum recording thresholds (ignore squelch pops / no-signal)
+#define MIN_RECORDING_SAMPLES (SAMPLE_RATE / 2)  // 0.5 seconds
+#define MIN_AUDIO_LEVEL 0.02f                     // Peak level below this = no signal
+
 // Signal quality thresholds
 #define CLIP_THRESHOLD 32112  // 98% of 32768
 #define CLIP_COUNT_WARN 100   // Need this many clipped samples to warn

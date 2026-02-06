@@ -204,6 +204,15 @@ void loop() {
   // Detect end of transmission
   if (!nowReceiving && wasReceiving && recording) {
     stopRecording();
+
+    // Ignore squelch pops and no-signal recordings
+    if (recordIndex < MIN_RECORDING_SAMPLES || peakAudioLevel < MIN_AUDIO_LEVEL) {
+      Serial.printf("Ignoring short/empty recording (%d samples, peak=%.3f)\n",
+                     recordIndex, peakAudioLevel);
+      wasReceiving = nowReceiving;
+      return;
+    }
+
     delay(2000);
 
     if (detectedDTMF == '#' && dtmfHashMessage.length() > 0) {
@@ -236,6 +245,15 @@ void loop() {
   if (recording && (millis() - recordStartTime > 10000)) {
     Serial.println("Recording timeout!");
     stopRecording();
+
+    // Ignore squelch pops and no-signal recordings
+    if (recordIndex < MIN_RECORDING_SAMPLES || peakAudioLevel < MIN_AUDIO_LEVEL) {
+      Serial.printf("Ignoring short/empty recording (%d samples, peak=%.3f)\n",
+                     recordIndex, peakAudioLevel);
+      wasReceiving = nowReceiving;
+      return;
+    }
+
     delay(2000);
 
     if (detectedDTMF == '#' && dtmfHashMessage.length() > 0) {
