@@ -41,11 +41,16 @@ void handleRoot() {
   html += "<label>TX CTCSS (0000=none):</label><input name='txctcss' value='" + radioTxCTCSS + "' placeholder='0000'>";
   html += "<label>RX CTCSS (0000=none):</label><input name='rxctcss' value='" + radioRxCTCSS + "' placeholder='0000'>";
   html += "<label>Squelch (0-8):</label><input name='squelch' type='number' min='0' max='8' value='" + String(radioSquelch) + "'>";
+  html += "<label>SA868 Volume (0-8):</label><input name='radiovol' type='number' min='0' max='8' value='" + String(radioVolume) + "'>";
+  html += "<label>SA868 Filter: Bandpass:</label><input name='filterbp' type='number' min='0' max='1' value='" + String(radioFilterBP) + "'>";
+  html += "<label>SA868 Filter: De-noise:</label><input name='filterden' type='number' min='0' max='1' value='" + String(radioFilterDENoise) + "'>";
+  html += "<label>SA868 Filter: De-emphasis:</label><input name='filterder' type='number' min='0' max='1' value='" + String(radioFilterDER) + "'>";
 
   // Audio settings
   html += "<h2>Audio Settings</h2>";
   html += "<label>Voice Volume (0-100%):</label><input name='samvol' type='number' min='0' max='100' value='" + String(samVolumePercent) + "'>";
   html += "<label>Tone Volume (0-100%):</label><input name='tonevol' type='number' min='0' max='100' value='" + String(toneVolumePercent) + "'>";
+  html += "<label>Recorded Playback Volume (0-200%):</label><input name='playvol' type='number' min='0' max='200' value='" + String(playbackVolumePercent) + "'>";
 
   // Pre/post messages
   html += "<h2>Message Wrapping</h2>";
@@ -172,8 +177,13 @@ void handleSave() {
   String newTxCTCSS = server.arg("txctcss");
   String newRxCTCSS = server.arg("rxctcss");
   String newSquelch = server.arg("squelch");
+  String newRadioVol = server.arg("radiovol");
+  String newFilterBP = server.arg("filterbp");
+  String newFilterDEN = server.arg("filterden");
+  String newFilterDER = server.arg("filterder");
   String newSamVol = server.arg("samvol");
   String newToneVol = server.arg("tonevol");
+  String newPlayVol = server.arg("playvol");
   bool newTestMode = server.hasArg("testmode");
 
   preferences.begin("parrot", false);
@@ -202,11 +212,26 @@ void handleSave() {
   if (newSquelch.length() > 0) {
     preferences.putInt("squelch", newSquelch.toInt());
   }
+  if (newRadioVol.length() > 0) {
+    preferences.putInt("radiovol", constrain(newRadioVol.toInt(), 0, 8));
+  }
+  if (newFilterBP.length() > 0) {
+    preferences.putInt("filterbp", constrain(newFilterBP.toInt(), 0, 1));
+  }
+  if (newFilterDEN.length() > 0) {
+    preferences.putInt("filterden", constrain(newFilterDEN.toInt(), 0, 1));
+  }
+  if (newFilterDER.length() > 0) {
+    preferences.putInt("filterder", constrain(newFilterDER.toInt(), 0, 1));
+  }
   if (newSamVol.length() > 0) {
     preferences.putInt("samvol", constrain(newSamVol.toInt(), 0, 100));
   }
   if (newToneVol.length() > 0) {
     preferences.putInt("tonevol", constrain(newToneVol.toInt(), 0, 100));
+  }
+  if (newPlayVol.length() > 0) {
+    preferences.putInt("playvol", constrain(newPlayVol.toInt(), 0, 200));
   }
   preferences.putBool("testmode", newTestMode);
   preferences.putString("hashmsg", server.arg("hashmsg"));
@@ -235,8 +260,13 @@ void handleSave() {
     time_t epoch = mktime(&t);
     struct tm utc;
     gmtime_r(&epoch, &utc);
+#ifndef BOARD_TTWR
     ds3231Write(utc);
     Serial.println("Manual time written to RTC");
+#else
+    (void)utc;  // Unused on T-TWR
+    Serial.println("Manual time written to ESP32 RTC (no DS3231)");
+#endif
   }
 
   String html = "<!DOCTYPE html><html><head><title>Saved</title>";
@@ -295,7 +325,9 @@ void handleSetTime() {
     if (rtcFound) {
       struct tm utc;
       gmtime_r(&epoch, &utc);
+#ifndef BOARD_TTWR
       ds3231Write(utc);
+#endif
     }
     server.send(200, "application/json", "{\"ok\":true}");
   } else {
@@ -369,12 +401,23 @@ void initWiFi() {
   radioTxCTCSS = preferences.getString("txctcss", "0000");
   radioRxCTCSS = preferences.getString("rxctcss", "0000");
   radioSquelch = preferences.getInt("squelch", 4);
+  radioVolume = preferences.getInt("radiovol", 8);       // SA868 volume (0-8), default max
+  radioFilterBP = preferences.getInt("filterbp", 0);     // Bandpass filter
+  radioFilterDENoise = preferences.getInt("filterden", 0); // De-noise
+  radioFilterDER = preferences.getInt("filterder", 0);   // De-emphasis
 
   // Audio settings
   samVolumePercent = preferences.getInt("samvol", 25);
   toneVolumePercent = preferences.getInt("tonevol", 12);
+  playbackVolumePercent = preferences.getInt("playvol", 50);
 
   // Pin configuration
+#ifdef BOARD_TTWR
+  pinPTT = preferences.getInt("pinPTT", 41);
+  pinPD = preferences.getInt("pinPD", 40);
+  pinAudioOn = preferences.getInt("pinAudioOn", 2);
+  pinVBAT = preferences.getInt("pinVBAT", -1);
+#else
   pinPTT = preferences.getInt("pinPTT", 33);
   pinPD = preferences.getInt("pinPD", 13);
   pinAudioOn = preferences.getInt("pinAudioOn", 4);
@@ -383,7 +426,8 @@ void initWiFi() {
   pinI2S_LRCLK = preferences.getInt("pinLRCLK", 27);
   pinI2S_DIN = preferences.getInt("pinDIN", 14);
   pinI2S_DOUT = preferences.getInt("pinDOUT", 25);
-  pinVBAT = preferences.getInt("pinVBAT", VBAT_PIN);  // Default 35, -1 to disable
+  pinVBAT = preferences.getInt("pinVBAT", VBAT_PIN);
+#endif
 
   // Testing mode (default ON for safety)
   testingMode = preferences.getBool("testmode", true);

@@ -4,6 +4,7 @@
 #include <sys/time.h>
 #include <WiFi.h>
 
+#ifndef BOARD_TTWR
 // BCD conversion helpers
 static uint8_t bcdToDec(uint8_t bcd) { return (bcd >> 4) * 10 + (bcd & 0x0F); }
 static uint8_t decToBcd(uint8_t dec) { return ((dec / 10) << 4) | (dec % 10); }
@@ -37,6 +38,7 @@ void ds3231Write(const struct tm &t) {
   Wire.write(decToBcd(t.tm_year % 100));
   Wire.endTransmission();
 }
+#endif // !BOARD_TTWR
 
 void applyTimezone() {
   if (timezonePosix.length() > 0) {
@@ -51,6 +53,11 @@ void applyTimezone() {
 }
 
 void initRTC() {
+#ifdef BOARD_TTWR
+  // T-TWR doesn't have a DS3231 - use ESP32 internal RTC and rely on NTP
+  Serial.println("T-TWR: DS3231 not available, using internal RTC + NTP");
+  rtcFound = false;
+#else
   Wire.begin(RTC_SDA, RTC_SCL);
   Wire.beginTransmission(DS3231_ADDR);
   if (Wire.endTransmission() == 0) {
@@ -71,6 +78,7 @@ void initRTC() {
   } else {
     Serial.println("DS3231 not found on I2C bus");
   }
+#endif
 }
 
 void syncNTP() {
@@ -104,6 +112,7 @@ void syncNTP() {
       Serial.printf("RTC was %+ld seconds off from NTP\n", drift);
     }
 
+#ifndef BOARD_TTWR
     if (rtcFound) {
       time_t now;
       time(&now);
@@ -112,6 +121,7 @@ void syncNTP() {
       ds3231Write(utc);
       Serial.println("RTC updated from NTP");
     }
+#endif
   } else {
     Serial.println("NTP sync failed (timeout)");
   }

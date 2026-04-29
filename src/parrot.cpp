@@ -27,10 +27,15 @@ String radioFreq;
 String radioTxCTCSS;
 String radioRxCTCSS;
 int radioSquelch;
+int radioVolume;          // SA868 volume (0-8)
+int radioFilterBP;        // AT+SETFILTER bandpass: 0=off, 1=on
+int radioFilterDENoise;   // AT+SETFILTER de-noise: 0=off, 1=on
+int radioFilterDER;       // AT+SETFILTER de-emphasis: 0=off, 1=on
 
 // Audio settings
 int samVolumePercent;
 int toneVolumePercent;
+int playbackVolumePercent;
 
 // Pin configuration (runtime)
 int pinPTT;
@@ -90,26 +95,45 @@ Preferences preferences;
 // ==================== Main Setup ====================
 
 void setup() {
-  // Set PTT HIGH immediately to prevent TX during boot
-  // Note: Using default pin here since preferences not loaded yet
-  pinMode(33, OUTPUT);  // Default PTT pin
-  digitalWrite(33, HIGH);  // RX mode
-
   Serial.begin(115200);
-  SA868.begin(9600, SERIAL_8N1, SA868_TX, SA868_RX);
+  delay(500);
+  Serial.println("Setup starting...");
 
-  // Pin setup
+  // Set PTT HIGH immediately to prevent TX during boot
+#ifdef BOARD_TTWR
+  pinMode(41, OUTPUT);  // T-TWR default PTT pin
+  digitalWrite(41, HIGH);  // RX mode
+  Serial.println("PTT pin set");
+#else
+  pinMode(33, OUTPUT);  // Original board default PTT pin
+  digitalWrite(33, HIGH);  // RX mode
+#endif
+
+  // Pin setup - do this BEFORE SA868 communication
   pinMode(PD_PIN, OUTPUT);
-  pinMode(AUDIO_ON_PIN, INPUT);
-  digitalWrite(PD_PIN, HIGH);   // Normal operation (not power down)
+  pinMode(AUDIO_ON_PIN, INPUT_PULLUP);  // SA868 squelch is open-collector, needs pull-up
+  digitalWrite(PD_PIN, HIGH);   // Power on SA868
+  delay(200);  // Give SA868 time to power up
+  Serial.printf("PD_PIN (GPIO%d) set HIGH\n", PD_PIN);
+  Serial.println("Pin modes set, SA868 powered on");
+
+  // Try 9600 baud for SA868 communication
+  // Explicitly set pin mapping for UART2 on ESP32-S3
+  // UART2 TX=GPIO39 (SA868_RX), UART2 RX=GPIO48 (SA868_TX)
+  // Note: TX of ESP32 connects to RX of SA868 and vice versa
+  SA868.begin(9600, SERIAL_8N1, SA868_RX, SA868_TX);
+  Serial.println("SA868 serial begun at 9600 baud");
 
   Serial.println("ESP32 Radio Parrot Starting...");
 
   // Initialize WiFi and load preferences
   initWiFi();
+  Serial.println("WiFi initialized");
 
   // Initialize RTC first (TZ is still UTC, so mktime reads DS3231 correctly)
   initRTC();
+  Serial.println("RTC initialized");
+
   // Now apply timezone and sync NTP
   applyTimezone();
   if (!apMode) {
@@ -124,6 +148,11 @@ void setup() {
   digitalWrite(pinPD, HIGH);   // Normal operation (not power down)
 
   Serial.printf("Pins: PTT=%d, PD=%d, AudioOn=%d\n", pinPTT, pinPD, pinAudioOn);
+#ifdef BOARD_TTWR
+  Serial.println("Board: T-TWR");
+#else
+  Serial.println("Board: Original ESP32-WROVER-KIT");
+#endif
   Serial.printf("I2S: MCLK=%d, BCLK=%d, LRCLK=%d, DIN=%d, DOUT=%d\n",
                 pinI2S_MCLK, pinI2S_BCLK, pinI2S_LRCLK, pinI2S_DIN, pinI2S_DOUT);
   Serial.printf("Testing mode: %s\n", testingMode ? "ON" : "OFF");
@@ -148,8 +177,9 @@ void setup() {
     while (1) delay(1000);
   }
 
-  // Initialize I2S
-  initI2S();
+  // Initialize audio hardware (board-specific: I2S or ADC/LEDC)
+  initAudioHardware();
+  initAudioInput();
 
   // Initialize SA868
   delay(500);
@@ -187,6 +217,7 @@ void loop() {
     int rssi = getRSSI();
     if (rssi > peakRSSI) peakRSSI = rssi;
     if (rssi < minRSSI && rssi > 0) minRSSI = rssi;
+    if (rssi > 0) lastKnownRSSI = rssi;  // Cache for squelch fallback
     lastRSSISample = millis();
   }
 

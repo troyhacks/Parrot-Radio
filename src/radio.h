@@ -7,9 +7,20 @@
 // SA868 UART (extern — created in parrot.cpp)
 extern HardwareSerial SA868;
 
-// I2S audio functions
-void initI2S();
-void i2sWrite(int16_t* data, size_t samples);
+// Audio functions - board-specific implementation
+void initAudioHardware();
+void audioWrite(int16_t* data, size_t samples);
+void audioRead(int16_t* buffer, size_t samples);
+void initAudioInput();  // ADC for T-TWR, I2S for original
+
+// Cached RSSI for squelch fallback (updated by parrot.cpp main loop)
+extern int lastKnownRSSI;
+
+// T-TWR specific: control analog switch to route audio to SA868
+void setAudioRoutingToRadio(bool enable);
+
+// T-TWR specific: mute/unmute speaker via PMU
+void setSpeakerMute(bool mute);
 
 // SA868 radio functions
 void initializeSA868();

@@ -5,6 +5,31 @@
 
 // ==================== Pin Definitions ====================
 
+#ifdef BOARD_TTWR
+// T-TWR Plus Rev 2.1 pin definitions
+#define PTT_PIN 41
+#define PD_PIN 40
+#define AUDIO_ON_PIN 2   // Squelch detect
+
+// SA868 UART (on T-TWR)
+#define SA868_TX 39
+#define SA868_RX 48
+
+// T-TWR audio paths
+#define ESP2MIC_PIN 18      // Audio output from ESP32 to SA868
+#define MIC_CH_SEL_PIN 17   // Analog switch: HIGH=ESP32 audio, LOW=physical mic
+#define RADIO_AUDIO_PIN 1   // Audio input from SA868 to ESP32 (ADC)
+
+// AXP2101 PMU I2C for speaker mute control
+#define PMU_SDA 8
+#define PMU_SCL 9
+#define PMU_IRQ 4
+
+// Note: T-TWR uses internal ADC for audio input, LEDC for audio output
+// I2S is not used for audio on T-TWR
+
+#else
+// Original ESP32-WROVER-KIT pin definitions
 // Control pins (defaults, configurable via web)
 #define PTT_PIN 33
 #define PD_PIN 13
@@ -27,6 +52,8 @@
 #define I2S_SD_OUT 25  // Audio to external device
 
 #define I2S_PORT I2S_NUM_0
+
+#endif // BOARD_TTWR
 
 // Battery voltage monitoring (ESP-WROVER-KIT: 100K/100K divider on IO35)
 #define VBAT_PIN 35
@@ -85,10 +112,15 @@ extern String radioFreq;
 extern String radioTxCTCSS;
 extern String radioRxCTCSS;
 extern int radioSquelch;
+extern int radioVolume;          // SA868 volume (0-8)
+extern int radioFilterBP;        // AT+SETFILTER bandpass: 0=off, 1=on
+extern int radioFilterDENoise;   // AT+SETFILTER de-noise: 0=off, 1=on
+extern int radioFilterDER;       // AT+SETFILTER de-emphasis: 0=off, 1=on
 
 // Audio settings
 extern int samVolumePercent;
 extern int toneVolumePercent;
+extern int playbackVolumePercent;  // Gain for recorded audio playback (0-100+)
 
 // Pin configuration (runtime)
 extern int pinPTT;

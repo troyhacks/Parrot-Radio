@@ -3,12 +3,13 @@
 #include <WiFi.h>
 #include <time.h>
 #include "espeak.h"
+#include "radio.h"
 
 // TTS output buffer
 static int16_t ttsBuffer[512];
 static int ttsBufferIndex = 0;
 
-// eSpeak audio output — Print subclass that feeds our I2S
+// eSpeak audio output — Print subclass that feeds our audio output
 class TTSOutput : public Print {
 public:
   size_t write(uint8_t b) override {
@@ -27,7 +28,7 @@ public:
         i += 2;
 
         if (ttsBufferIndex >= 512) {
-          i2sWrite(ttsBuffer, ttsBufferIndex);
+          audioWrite(ttsBuffer, ttsBufferIndex);
           ttsBufferIndex = 0;
         }
       } else {
@@ -39,7 +40,7 @@ public:
 
   void flush() {
     if (ttsBufferIndex > 0) {
-      i2sWrite(ttsBuffer, ttsBufferIndex);
+      audioWrite(ttsBuffer, ttsBufferIndex);
       ttsBufferIndex = 0;
     }
   }
@@ -220,14 +221,14 @@ void playTone(int frequency, int duration) {
     buffer[bufIndex++] = value;
 
     if (bufIndex >= 256) {
-      i2sWrite(buffer, bufIndex);
+      audioWrite(buffer, bufIndex);
       bufIndex = 0;
     }
   }
 
   // Write remaining samples
   if (bufIndex > 0) {
-    i2sWrite(buffer, bufIndex);
+    audioWrite(buffer, bufIndex);
   }
 }
 
