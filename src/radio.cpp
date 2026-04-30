@@ -309,7 +309,7 @@ static void IRAM_ATTR audioTimerISR() {
     // Map int16_t (-32768 to 32767) to 10-bit duty (0 to 1023), centered at 512
     uint16_t duty = (uint16_t)constrain((entry.sample >> 6) + 512, 0, 1023);
     ledcWrite(0, duty);
-    // Change timer interval for next sample (enables mixed TTS at 1814 + recorded at adcTicksPerSample)
+    // Change timer interval for next sample (enables mixed TTS at 45 + recorded at adcTicksPerSample)
     timerAlarmWrite(audioTimer, entry.ticks, true);
   }
 }
@@ -374,10 +374,14 @@ void initAudioInput() {
   adc_digi_deinitialize();
 
   // Initialize digital ADC DMA
+  // BUFFER OVERFLOW FIX: max_store_buf_size must be >> conv_num_each_intr
+  // to prevent sample drops when main loop is busy with other tasks.
+  // At 40320 Hz, 128 samples = 3.17ms. If main loop takes >3ms, samples were dropped.
+  // 4096 bytes = 1024 samples = 25ms of margin, plenty for RTOS/WiFi overhead.
   adc_digi_init_config_t initConfig = {
-    .max_store_buf_size = 512,  // 128 samples * 4 bytes
-    .conv_num_each_intr = 128,  // Request 128 samples per interrupt
-    .adc1_chan_mask = (1 << 0),  // ADC1 channel 0
+    .max_store_buf_size = 4096, // 1024 samples * 4 bytes (~25ms of safety margin)
+    .conv_num_each_intr = 256,   // Request 256 samples per interrupt (~6.3ms)
+    .adc1_chan_mask = (1 << 0), // ADC1 channel 0
     .adc2_chan_mask = 0,
   };
 
@@ -400,7 +404,7 @@ void initAudioInput() {
   digiConfig.conv_limit_num = 255;
   digiConfig.pattern_num = 1;
   digiConfig.adc_pattern = &patternConfig;
-  digiConfig.sample_freq_hz = 40000;  // Empirically gives ~22144 Hz actual (matches playback)
+  digiConfig.sample_freq_hz = 20000;  // Reduced to 20kHz so main loop can keep up with DMA
   digiConfig.conv_mode = ADC_CONV_SINGLE_UNIT_1;  // Use ADC1 only
   digiConfig.format = ADC_DIGI_OUTPUT_FORMAT_TYPE2;  // TYPE2 for ESP32-S3
 
@@ -433,7 +437,7 @@ void initAudioInput() {
   while (millis() - calStart < 1000) {
     esp_err_t err = adc_digi_read_bytes(calResult, sizeof(calResult), &ret_num, 30);
     if (err == ESP_OK) {
-      int n = ret_num / 4;
+      int n = ret_num / 4;  // TYPE2 format: 4 bytes per sample
       calSamples += n;
       for (int i = 0; i < n; i++) {
         uint32_t val = calResult[i * 4] | (calResult[i * 4 + 1] << 8) |
@@ -448,16 +452,11 @@ void initAudioInput() {
     Serial.printf("ADC DC offset: %d\n", adcCenter);
     Serial.printf("ADC calibration: %lu samples in 1 second\n", calSamples);
 
-    // Compute actual ADC rate (timer runs at 1 MHz with prescaler 80)
-    // ticks per sample = 1000000 / samples_per_second
-    // NOTE: User confirms 24 ticks = 2x fast with correct pitch.
-    // The calibration shows 40320 samples/second but empirically, the audio
-    // content seems to be at a rate where 24 ticks sounds correct.
-    // Use rawTicks to get 24 ticks = 41667 Hz playback (slightly fast).
-    uint16_t rawTicks = (uint16_t)(1000000.0f / (float)calSamples);
-    adcTicksPerSample = rawTicks;  // 24 ticks - empirically sounds correct
-    if (adcTicksPerSample < 1) adcTicksPerSample = 1;
-    adcSampleRate = (float)calSamples;  // Store actual measured rate for Goertzel
+    // Compute tick count from measured ADC rate.
+    // Timer clock = 1 MHz (APB 80 MHz / prescaler 80 = 1 µs/tick).
+    // Ticks needed = 1,000,000 / samples_per_second.
+    adcSampleRate = (float)calSamples;
+    adcTicksPerSample = (uint16_t)(1000000.0f / adcSampleRate + 0.5f);  // Round to nearest
     Serial.printf("ADC actual rate: %.0f Hz (%u timer ticks/sample)\n",
                   adcSampleRate, adcTicksPerSample);
   } else {
@@ -491,7 +490,7 @@ int audioRead(int16_t* buffer, size_t samples) {
   }
 
   static int dbgCallCount = 0;
-  int samplesRead = ret_num / 4;  // 4 bytes per sample on S3
+  int samplesRead = ret_num / 4;  // TYPE2 format: 4 bytes per sample
 
   // Debug first few calls
   if (dbgCallCount < 3) {
@@ -741,9 +740,9 @@ void stopRecording() {
 void recordAudioSamples() {
 #ifdef BOARD_TTWR
   // T-TWR: Read audio via ADC DMA from GPIO 1
-  // DMA returns up to 128 samples per read (512 bytes / 4 bytes per sample)
-  int16_t samples[128];
-  int actual = audioRead(samples, 128);
+  // Increased to 256 samples to drain DMA buffer faster and prevent overflow artifacts
+  int16_t samples[256];
+  int actual = audioRead(samples, 256);
 
   // Debug: show actual returned count for first few calls
   static int dbgRec = 0;
