@@ -33,14 +33,15 @@ void startAudioOutput();
 void stopAudioOutput();
 void drainAudio();
 
-// Goertzel coefficients (precomputed for SAMPLE_RATE)
+// Goertzel coefficients (precomputed using actual sample rate)
 static float goertzelCoeff[8];
 
-void initGoertzel() {
+void initGoertzel(float sampleRate) {
   for (int i = 0; i < 8; i++) {
-    float k = (DTMF_BLOCK_SIZE * DTMF_FREQS[i]) / SAMPLE_RATE;
+    float k = (DTMF_BLOCK_SIZE * DTMF_FREQS[i]) / sampleRate;
     goertzelCoeff[i] = 2.0f * cos(2.0f * PI * k / DTMF_BLOCK_SIZE);
   }
+  Serial.printf("Goertzel initialized for %.0f Hz (DTMF_BLOCK_SIZE=%d)\n", sampleRate, DTMF_BLOCK_SIZE);
 }
 
 static float goertzelMagnitude(int16_t* samples, int count, int freqIndex) {
@@ -86,13 +87,14 @@ char detectDTMF(int16_t* samples, int count) {
   // Debug: show top magnitudes periodically
   static int dbgDtmf = 0;
   if (dbgDtmf < 3) {
-    Serial.printf("DTMF mag[%d]: row=%.0f(col=%.0f), threshold=1e12\n", dbgDtmf, maxRow, maxCol);
+    Serial.printf("DTMF mag[%d]: row=%.0f, col=%.0f\n", dbgDtmf, maxRow, maxCol);
     dbgDtmf++;
   }
 
   // Need both row and column to be significantly above noise
-  // Threshold tuned for radio audio - reduce if DTMF not detected
-  float threshold = 1e8;
+  // With 205 samples at 22050 Hz, real DTMF tones produce magnitudes >> 1e11
+  // Use 1e11 to avoid false triggers from noise or speech harmonics
+  float threshold = 1e11;
   if (maxRow > threshold && maxCol > threshold) {
     // Check that the two strongest are much stronger than others
     char digit = DTMF_CHARS[rowIdx][colIdx];
@@ -120,7 +122,7 @@ void saveToSlot(int slotIndex) {
   if (slotIndex < 0 || slotIndex >= MAX_SLOTS) return;
   if (!slots[slotIndex].buffer) return;
 
-  // Copy current recording to slot
+  // Copy current recording to slot (at ADC rate - playback uses adcTicksPerSample to match)
   int copyCount = min(recordIndex, MAX_SAMPLES);
   memcpy(slots[slotIndex].buffer, audioBuffer, copyCount * sizeof(int16_t));
   slots[slotIndex].sampleCount = copyCount;
@@ -148,15 +150,22 @@ void playSlot(int slotIndex) {
 
   if (slots[slotIndex].sampleCount == 0 || !slots[slotIndex].buffer) {
     Serial.printf("Slot %d is empty\n", slotIndex + 1);
+    setAudioRoutingToRadio(true);
+    setSpeakerMute(true);
     sayText("no recording");
+    setSpeakerMute(false);
+    setAudioRoutingToRadio(false);
   } else {
     Serial.printf("Playing slot %d (%d samples)\n", slotIndex + 1, slots[slotIndex].sampleCount);
+    setAudioRoutingToRadio(true);
 
-    // Play back the slot
+    // Play back the slot at the rate it was recorded (adcTicksPerSample)
     for (int i = 0; i < slots[slotIndex].sampleCount; i += 256) {
       int chunkSize = min(256, slots[slotIndex].sampleCount - i);
-      audioWrite(&slots[slotIndex].buffer[i], chunkSize);
+      audioWrite(&slots[slotIndex].buffer[i], chunkSize, adcTicksPerSample);
     }
+    drainAudio();
+    setAudioRoutingToRadio(false);
   }
 
   delay(300);
@@ -171,6 +180,8 @@ void playRadioTest() {
   Serial.printf("Playing radio test audio (%d samples, %.1f sec)\n",
                 RADIO_TEST_SAMPLES, (float)RADIO_TEST_SAMPLES / RADIO_TEST_SAMPLE_RATE);
 
+  setAudioRoutingToRadio(true);
+
   // Play embedded audio from PROGMEM
   int16_t buffer[256];
   for (int i = 0; i < RADIO_TEST_SAMPLES; i += 256) {
@@ -182,10 +193,18 @@ void playRadioTest() {
     audioWrite(buffer, chunkSize);
   }
 
+  drainAudio();
+  setAudioRoutingToRadio(false);
+
   delay(300);
   pttOff();
   Serial.println("Radio test complete!");
 }
+
+// Calibrated timer ticks per sample for recorded audio playback (set during ADC calibration)
+uint16_t adcTicksPerSample = 1814;  // Default = 22050 Hz; updated in initAudioInput
+// Actual measured ADC sample rate in Hz (computed during ADC calibration)
+float adcSampleRate = 22050.0f;
 
 #ifdef BOARD_TTWR
 // ==================== T-TWR Audio Implementation ====================
@@ -262,8 +281,10 @@ void setSpeakerMute(bool mute) {
 
 // ==================== Timer-driven audio output ====================
 // Ring buffer for timer-driven LEDC output at proper sample rate
-#define AUDIO_RING_BUF_SIZE 1024
-static int16_t audioRingBuf[AUDIO_RING_BUF_SIZE];
+#define AUDIO_RING_BUF_SIZE 2048
+// Each entry: sample value + timer ticks per sample (TTS=1814, ADC=measured)
+typedef struct { int16_t sample; uint16_t ticks; } AudioRingEntry;
+static AudioRingEntry audioRingBuf[AUDIO_RING_BUF_SIZE];
 static volatile uint16_t audioRingWriteIdx = 0;
 static volatile uint16_t audioRingReadIdx = 0;
 static volatile bool audioTimerRunning = false;
@@ -272,39 +293,56 @@ static portMUX_TYPE audioTimerMux = portMUX_INITIALIZER_UNLOCKED;
 
 // Measured DC offset of ADC (calibrated at startup)
 static uint16_t adcCenter = 2048;  // Default; real value calibrated in initAudioInput
+// Adaptive DC estimate (reset at start of each recording)
+float dcEstimate = 2048.0f;
 
+// Counter for consecutive squelch-HIGH readings to detect end of transmission
+static int squelchHighCount = 0;
+// Timestamp when current transmission started (to ignore brief squelch at start)
+static unsigned long transmissionStartTime = 0;
+// Timestamp when recording began (to compute actual vs recorded duration)
+static unsigned long recordingStartTime = 0;
 static void IRAM_ATTR audioTimerISR() {
   if (audioRingWriteIdx != audioRingReadIdx) {
-    int16_t sample = audioRingBuf[audioRingReadIdx];
+    AudioRingEntry entry = audioRingBuf[audioRingReadIdx];
     audioRingReadIdx = (audioRingReadIdx + 1) % AUDIO_RING_BUF_SIZE;
     // Map int16_t (-32768 to 32767) to 10-bit duty (0 to 1023), centered at 512
-    uint16_t duty = (uint16_t)constrain((sample >> 6) + 512, 0, 1023);
+    uint16_t duty = (uint16_t)constrain((entry.sample >> 6) + 512, 0, 1023);
     ledcWrite(0, duty);
+    // Change timer interval for next sample (enables mixed TTS at 1814 + recorded at adcTicksPerSample)
+    timerAlarmWrite(audioTimer, entry.ticks, true);
   }
 }
 
+// Forward declaration for the three-argument version
+void audioWrite(int16_t* data, size_t samples, uint16_t ticksPerSample);
+
+// Two-argument version defaults to TTS speed (45 ticks = 1MHz / 22222Hz)
 void audioWrite(int16_t* data, size_t samples) {
-  // Non-blocking write to ring buffer; drains at 22050 Hz via timer
+  audioWrite(data, samples, 45);
+}
+// Three-argument version with configurable timer ticks per sample
+void audioWrite(int16_t* data, size_t samples, uint16_t ticksPerSample) {
   for (size_t i = 0; i < samples; i++) {
     uint16_t next = (audioRingWriteIdx + 1) % AUDIO_RING_BUF_SIZE;
     while (next == audioRingReadIdx) {
       delayMicroseconds(10);
     }
-    audioRingBuf[audioRingWriteIdx] = data[i];
+    audioRingBuf[audioRingWriteIdx] = (AudioRingEntry){data[i], ticksPerSample};
     audioRingWriteIdx = next;
   }
 }
 
 void startAudioOutput() {
   if (audioTimer == nullptr) {
-    // Use timer 1, divider 80 (1 µs tick), count down
+    // Use timer 1, divider 80 (1 µs tick), for 22050 Hz
     audioTimer = timerBegin(1, 80, true);
     timerAttachInterrupt(audioTimer, &audioTimerISR, true);
-    // 22050 Hz = 1/22050 second period = ~45.35 µs
-    timerAlarmWrite(audioTimer, 45, true);  // ~45 µs ≈ 22050 Hz
+    // 1MHz / 45 = 22222 Hz (close enough to 22050 that TTS pitch is correct)
+    timerAlarmWrite(audioTimer, 45, true);
     timerAlarmEnable(audioTimer);
     audioTimerRunning = true;
-    Serial.println("Audio output timer started");
+    Serial.println("Audio output timer started at ~22222 Hz");
   }
 }
 
@@ -335,10 +373,10 @@ void initAudioInput() {
   // Try to deinitialize first in case of partial state
   adc_digi_deinitialize();
 
-  // Initialize digital ADC DMA - matching WLED-MM DMAadcSource
+  // Initialize digital ADC DMA
   adc_digi_init_config_t initConfig = {
-    .max_store_buf_size = 512,  // WLED uses blockSize * ADC_RESULT_BYTE = 128 * 4 = 512
-    .conv_num_each_intr = 512,
+    .max_store_buf_size = 512,  // 128 samples * 4 bytes
+    .conv_num_each_intr = 128,  // Request 128 samples per interrupt
     .adc1_chan_mask = (1 << 0),  // ADC1 channel 0
     .adc2_chan_mask = 0,
   };
@@ -362,7 +400,7 @@ void initAudioInput() {
   digiConfig.conv_limit_num = 255;
   digiConfig.pattern_num = 1;
   digiConfig.adc_pattern = &patternConfig;
-  digiConfig.sample_freq_hz = 22050;
+  digiConfig.sample_freq_hz = 40000;  // Empirically gives ~22144 Hz actual (matches playback)
   digiConfig.conv_mode = ADC_CONV_SINGLE_UNIT_1;  // Use ADC1 only
   digiConfig.format = ADC_DIGI_OUTPUT_FORMAT_TYPE2;  // TYPE2 for ESP32-S3
 
@@ -384,48 +422,64 @@ void initAudioInput() {
   }
 
   adcI2sInitialized = true;
-  Serial.println("ADC DMA started for audio input (GPIO1, ADC1_CH0)");
+  Serial.println("ADC DMA started. Calibrating true hardware speed and DC offset (1000ms)...");
 
-  // Calibrate DC offset: read ~100ms of silence and average
-  uint32_t sum = 0, count = 0;
+  uint32_t calStart = millis();
+  uint32_t calSamples = 0;
+  uint64_t dcSum = 0;
   uint8_t calResult[512 * 4];
   uint32_t ret_num;
-  for (int attempt = 0; attempt < 10 && count < 2205; attempt++) {
+
+  while (millis() - calStart < 1000) {
     esp_err_t err = adc_digi_read_bytes(calResult, sizeof(calResult), &ret_num, 30);
     if (err == ESP_OK) {
-      int calSamples = ret_num / 4;
-      for (int i = 0; i < calSamples; i++) {
+      int n = ret_num / 4;
+      calSamples += n;
+      for (int i = 0; i < n; i++) {
         uint32_t val = calResult[i * 4] | (calResult[i * 4 + 1] << 8) |
                        (calResult[i * 4 + 2] << 16) | (calResult[i * 4 + 3] << 24);
-        uint16_t adcValue = val & 0xFFF;
-        sum += adcValue;
-        count++;
+        dcSum += (val & 0xFFF);
       }
     }
   }
-  if (count > 0) {
-    adcCenter = sum / count;
-    Serial.printf("ADC DC offset calibrated: %d (from %lu samples)\n", adcCenter, count);
+
+  if (calSamples > 0) {
+    adcCenter = (uint16_t)(dcSum / calSamples);
+    Serial.printf("ADC DC offset: %d\n", adcCenter);
+    Serial.printf("ADC calibration: %lu samples in 1 second\n", calSamples);
+
+    // Compute actual ADC rate (timer runs at 1 MHz with prescaler 80)
+    // ticks per sample = 1000000 / samples_per_second
+    // NOTE: User confirms 24 ticks = 2x fast with correct pitch.
+    // The calibration shows 40320 samples/second but empirically, the audio
+    // content seems to be at a rate where 24 ticks sounds correct.
+    // Use rawTicks to get 24 ticks = 41667 Hz playback (slightly fast).
+    uint16_t rawTicks = (uint16_t)(1000000.0f / (float)calSamples);
+    adcTicksPerSample = rawTicks;  // 24 ticks - empirically sounds correct
+    if (adcTicksPerSample < 1) adcTicksPerSample = 1;
+    adcSampleRate = (float)calSamples;  // Store actual measured rate for Goertzel
+    Serial.printf("ADC actual rate: %.0f Hz (%u timer ticks/sample)\n",
+                  adcSampleRate, adcTicksPerSample);
   } else {
-    Serial.println("ADC calibration failed, using default 2048");
+    Serial.println("ADC calibration failed, using defaults");
+    adcTicksPerSample = 45;
+    adcSampleRate = 22050.0f;
   }
 }
 
-void audioRead(int16_t* buffer, size_t samples) {
+int audioRead(int16_t* buffer, size_t samples) {
   if (!adcI2sInitialized) {
     Serial.println("audioRead: ADC not initialized, using analogRead fallback");
     for (size_t i = 0; i < samples; i++) {
       buffer[i] = (int16_t)(analogRead(RADIO_AUDIO_PIN) - (int)adcCenter) << 4;
     }
-    return;
+    return samples;
   }
 
   // Read audio samples via ADC DMA - matching WLED-MM DMAadcSource
   // For ESP32-S3, ADC_RESULT_BYTE = 4 (SOC_ADC_DIGI_RESULT_BYTES)
   uint8_t result[512 * 4];  // 512 samples * 4 bytes
   uint32_t ret_num;
-  uint32_t totalbytes = 0;
-  uint32_t j = 0;
 
   esp_err_t err = adc_digi_read_bytes(result, sizeof(result), &ret_num, 30);
   if (err != ESP_OK && err != ESP_ERR_INVALID_STATE) {
@@ -433,7 +487,7 @@ void audioRead(int16_t* buffer, size_t samples) {
     for (size_t i = 0; i < samples; i++) {
       buffer[i] = (int16_t)(analogRead(RADIO_AUDIO_PIN) - 2048) << 4;
     }
-    return;
+    return samples;
   }
 
   static int dbgCallCount = 0;
@@ -443,33 +497,27 @@ void audioRead(int16_t* buffer, size_t samples) {
   if (dbgCallCount < 3) {
     Serial.printf("audioRead[%d]: requested=%d, ret_num=%d, samplesRead=%d, adcCenter=%d\n",
                   dbgCallCount, samples, ret_num, samplesRead, adcCenter);
-    // Show first few raw and DC-corrected values
-    for (int i = 0; i < samplesRead && i < 8; i++) {
-      uint32_t val = result[i * 4] | (result[i * 4 + 1] << 8) |
-                     (result[i * 4 + 2] << 16) | (result[i * 4 + 3] << 24);
-      uint16_t adcValue = val & 0xFFF;
-      int32_t dcCorrected = ((int32_t)adcValue - adcCenter) << 4;
-      Serial.printf("  raw[%d]=%d, dcCorr=%d\n", i, adcValue, dcCorrected);
-    }
     dbgCallCount++;
   }
 
   // Parse TYPE2 format - extract 12-bit ADC value from 4-byte result
-  for (int i = 0; i < samplesRead && j < samples; i++) {
+  // Use adaptive DC removal: very slow-moving average to prevent drift
+  // alpha=0.999995 → time constant ≈ 11 sec (slow enough to not distort speech)
+  const float dcAlpha = 0.999995f;
+  int j = 0;
+  for (int i = 0; i < samplesRead && j < (int)samples; i++) {
     uint32_t val = result[i * 4] | (result[i * 4 + 1] << 8) |
                    (result[i * 4 + 2] << 16) | (result[i * 4 + 3] << 24);
     // TYPE2: lower 12 bits is the ADC value
     uint16_t adcValue = val & 0xFFF;
 
-    // Convert to signed 16-bit, centered at adcCenter (calibrated DC offset)
-    int32_t sample = ((int32_t)adcValue - adcCenter) << 4;
+    // Adaptive DC removal: update estimate and subtract
+    dcEstimate = dcAlpha * dcEstimate + (1.0f - dcAlpha) * (float)adcValue;
+    int32_t sample = ((int32_t)adcValue - (int32_t)dcEstimate) << 4;
     buffer[j++] = (int16_t)constrain(sample, -32768, 32767);
   }
 
-  // Zero-fill any remaining
-  while (j < samples) {
-    buffer[j++] = 0;
-  }
+  return j;  // Return actual count of samples read
 }
 
 #else
@@ -620,16 +668,29 @@ bool isReceiving() {
   // Audio ON pin goes LOW when receiving
   bool squelchLow = (digitalRead(pinAudioOn) == LOW);
 
-  // If squelch says receiving, trust it
-  if (squelchLow) return true;
+  if (squelchLow) {
+    squelchHighCount = 0;  // Reset counter on any LOW
+    // Mark when a new transmission starts
+    if (!recording) {
+      transmissionStartTime = millis();
+    }
+    return true;
+  }
 
-  // Squelch high: only trust RSSI fallback if we're already in a recording
-  // (prevents squelch flutter from stopping recording prematurely)
-  // Do NOT start new recording based on stale RSSI
-  if (recording && lastKnownRSSI > 50) return true;
+  // Squelch HIGH: only count if transmission has been active for >200ms
+  // This prevents squelch flutter at the start of a transmission from ending it early
+  unsigned long elapsed = millis() - transmissionStartTime;
+  if (elapsed > 200) {
+    squelchHighCount++;
+    // After 5+ consecutive HIGH readings (500ms), transmission ended
+    if (squelchHighCount >= 5) {
+      squelchHighCount = 0;
+      return false;
+    }
+  }
 
-  return false;
-}
+  // If we're in a recording and squelch is briefly high but < 1 sec since start, keep recording
+  if (recording) return true;
 
   return false;
 }
@@ -642,14 +703,20 @@ void startRecording() {
   peakAudioLevel = 0;
   clipCount = 0;
   detectedDTMF = 0;  // Reset DTMF detection
+  lastKnownRSSI = 0;  // Reset RSSI cache at start of new recording
+  squelchHighCount = 0;  // Reset squelch counter
+  transmissionStartTime = 0;  // Will be set when squelch next goes LOW
 
 #ifdef BOARD_TTWR
+  // Reset DC estimate at start of recording to prevent drift
+  dcEstimate = adcCenter;
   // Stop audio output timer during recording to reduce digital noise on ADC path
   stopAudioOutput();
   // Route audio from ESP32 to radio
   setAudioRoutingToRadio(false);  // false = keep physical mic path
 #endif
 
+  recordingStartTime = millis();
   Serial.println("Recording started...");
 }
 
@@ -661,18 +728,31 @@ void stopRecording() {
   startAudioOutput();
 #endif
 
-  Serial.printf("Recording stopped. %d samples captured.\n", recordIndex);
+  // Estimate duration based on sample count and sample rate
+  float durationSec = (float)recordIndex / SAMPLE_RATE;
+  float elapsedSec = (millis() - recordingStartTime) / 1000.0f;
+  Serial.printf("Recording stopped. %d samples captured (%.1f sec @ %d Hz, %.1f sec elapsed).\n",
+                recordIndex, durationSec, SAMPLE_RATE, elapsedSec);
+  Serial.printf("  Recording speed ratio: %.2fx (1.00 = correct)\n", durationSec / elapsedSec);
   Serial.printf("RSSI: min=%d, peak=%d\n", minRSSI, peakRSSI);
   Serial.printf("Audio: peak=%.1f, clipped samples=%d\n", peakAudioLevel, clipCount);
 }
 
 void recordAudioSamples() {
 #ifdef BOARD_TTWR
-  // T-TWR: Read audio via fast I2S ADC from GPIO 1
-  int16_t samples[256];
-  audioRead(samples, 256);
+  // T-TWR: Read audio via ADC DMA from GPIO 1
+  // DMA returns up to 128 samples per read (512 bytes / 4 bytes per sample)
+  int16_t samples[128];
+  int actual = audioRead(samples, 128);
 
-  for (int i = 0; i < 256 && recordIndex < MAX_SAMPLES; i++) {
+  // Debug: show actual returned count for first few calls
+  static int dbgRec = 0;
+  if (dbgRec < 5) {
+    Serial.printf("recordAudioSamples[%d]: actual=%d, recordIndex=%d\n", dbgRec, actual, recordIndex);
+    dbgRec++;
+  }
+
+  for (int i = 0; i < actual && recordIndex < MAX_SAMPLES; i++) {
     int16_t sample = samples[i];
     audioBuffer[recordIndex++] = sample;
 
@@ -785,22 +865,16 @@ void playbackWithFeedback() {
 
   speakPreMessage();
 
-  // Play back recorded audio with volume applied
-  Serial.printf("playbackWithFeedback: playbackVolumePercent=%d, recordIndex=%d\n", playbackVolumePercent, recordIndex);
-  // Debug: check first few samples of recording
-  int16_t mn = audioBuffer[0], mx = audioBuffer[0];
-  for (int i = 1; i < recordIndex && i < 256; i++) {
-    if (audioBuffer[i] < mn) mn = audioBuffer[i];
-    if (audioBuffer[i] > mx) mx = audioBuffer[i];
-  }
-  Serial.printf("  audioBuffer[0..255]: min=%d, max=%d\n", mn, mx);
+  // Play back recorded audio with volume applied (at the rate it was recorded)
+  Serial.printf("playbackWithFeedback: playbackVolumePercent=%d, recordIndex=%d, ticks=%d\n",
+                playbackVolumePercent, recordIndex, adcTicksPerSample);
   int16_t buffer[256];
   for (int i = 0; i < recordIndex; i += 256) {
     int chunkSize = min(256, recordIndex - i);
     for (int j = 0; j < chunkSize; j++) {
       buffer[j] = (audioBuffer[i + j] * playbackVolumePercent) / 100;
     }
-    audioWrite(buffer, chunkSize);
+    audioWrite(buffer, chunkSize, adcTicksPerSample);  // play at recorded rate
   }
   Serial.println("playbackWithFeedback: audio loop done");
 

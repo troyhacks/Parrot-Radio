@@ -164,9 +164,6 @@ void setup() {
 
     // Initialize recording slots
     initSlots();
-
-    // Initialize Goertzel coefficients for DTMF detection
-    initGoertzel();
   } else {
     audioBuffer = (int16_t*)malloc(MAX_SAMPLES * sizeof(int16_t));
     Serial.println("Warning: PSRAM not found, using internal RAM (no DTMF mailbox)");
@@ -180,6 +177,14 @@ void setup() {
   // Initialize audio hardware (board-specific: I2S or ADC/LEDC)
   initAudioHardware();
   initAudioInput();
+
+  // Initialize Goertzel coefficients using actual ADC sample rate
+#ifdef BOARD_TTWR
+  float actualSampleRate = adcSampleRate;  // Already measured as calSamples in calibration
+#else
+  float actualSampleRate = SAMPLE_RATE;
+#endif
+  initGoertzel(actualSampleRate);
 
   // Initialize SA868
   delay(500);
@@ -251,7 +256,11 @@ void loop() {
       String expanded = expandMacros(dtmfHashMessage);
       pttOn();
       delay(600);
+      setAudioRoutingToRadio(true);
+      setSpeakerMute(true);
       sayText(expanded.c_str());
+      setSpeakerMute(false);
+      setAudioRoutingToRadio(false);
       delay(1000);
       pttOff();
     } else if (detectedDTMF == '*') {
@@ -291,7 +300,11 @@ void loop() {
       String expanded = expandMacros(dtmfHashMessage);
       pttOn();
       delay(600);
+      setAudioRoutingToRadio(true);
+      setSpeakerMute(true);
       sayText(expanded.c_str());
+      setSpeakerMute(false);
+      setAudioRoutingToRadio(false);
       delay(1000);
       pttOff();
     } else if (detectedDTMF == '*') {

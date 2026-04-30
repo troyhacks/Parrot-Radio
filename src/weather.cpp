@@ -138,9 +138,13 @@ void speakWeather() {
   Serial.printf("Weather report: %s\n", report.c_str());
   pttOn();
   delay(600);
+  setAudioRoutingToRadio(true);
+  setSpeakerMute(true);
   speakPreMessage();
   sayText(("Weather report, " + report).c_str());
   speakPostMessage();
+  setSpeakerMute(false);
+  setAudioRoutingToRadio(false);
   delay(1000);
   pttOff();
 }
