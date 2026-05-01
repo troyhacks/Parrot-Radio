@@ -200,6 +200,18 @@ void setup() {
   displayDebug("Starting...");
   delay(200);
 
+  // Prime weather cache on boot (after OLED is ready)
+  if (apMode) {
+    displaySetWeather("AP Mode");
+  } else if (weatherLat == 0 && weatherLon == 0) {
+    displaySetWeather("Set location in web");
+  } else {
+    displayDebug("Fetching weather...");
+    String weatherStr = fetchWeatherReport();
+    displaySetWeather(getWeatherDisplayString().c_str());
+    Serial.printf("Initial weather: %s\n", weatherStr.c_str());
+  }
+
   // Initialize Goertzel coefficients using actual ADC sample rate
 #ifdef BOARD_TTWR
   float actualSampleRate = adcSampleRate;  // Already measured as calSamples in calibration
@@ -215,6 +227,13 @@ void setup() {
   while (SA868.available()) SA868.read();  // Clear receive buffer
   initializeSA868();
   displayDebug("Radio OK");
+  delay(100);
+
+  // Set frequency and CTCSS display from radio settings
+  char freqBuf[16];
+  snprintf(freqBuf, sizeof(freqBuf), "%s MHz", radioFreq.c_str());
+  displaySetChannel(freqBuf);
+  displaySetCTCSS(radioTxCTCSS.c_str(), radioRxCTCSS.c_str());
   delay(100);
 
   // Initialize eSpeak NG speech synthesis
@@ -260,6 +279,7 @@ void loop() {
     startRecording();
     recordStartTime = millis();
     displaySetState(DisplayState::Recording);
+    displayShowState();  // Show full display with IP/time
   }
 
   // Record audio samples via I2S
@@ -283,7 +303,6 @@ void loop() {
 
     if (detectedDTMF == '#' && dtmfHashMessage.length() > 0) {
       displaySetState(DisplayState::TTS);
-      displaySetAction("TTS MSG");
       displayShowState();  // Show full display with IP/time
       // DTMF # - speak configurable message with macro expansion
       String expanded = expandMacros(dtmfHashMessage);
@@ -298,24 +317,18 @@ void loop() {
       pttOff();
     } else if (detectedDTMF == '*') {
       displaySetState(DisplayState::Weather);
-      displaySetAction("WEATHER");
       displayShowState();
       // DTMF * - speak weather (handles PTT and speech internally)
       speakWeather();
     } else if (detectedDTMF == '9') {
       displaySetState(DisplayState::TTS);
-      displaySetAction("TEST MSG");
       displayShowState();
       // DTMF 9 - play embedded radio test audio
       playRadioTest();
     } else if (detectedDTMF >= '1' && detectedDTMF <= '8') {
       displaySetState(DisplayState::Prerecord);
-      int slotIndex = detectedDTMF - '1';  // '1' -> slot 0, '8' -> slot 7
-      char action[16];
-      snprintf(action, sizeof(action), "PLAY SLOT %d", slotIndex + 1);
-      displaySetAction(action);
       displayShowState();
-      playSlot(slotIndex);
+      playSlot(detectedDTMF - '1');
     } else {
       displaySetState(DisplayState::Playing);
       displayShowState();
@@ -343,7 +356,6 @@ void loop() {
 
     if (detectedDTMF == '#' && dtmfHashMessage.length() > 0) {
       displaySetState(DisplayState::TTS);
-      displaySetAction("TTS MSG");
       displayShowState();
       String expanded = expandMacros(dtmfHashMessage);
       pttOn();
@@ -357,22 +369,16 @@ void loop() {
       pttOff();
     } else if (detectedDTMF == '*') {
       displaySetState(DisplayState::Weather);
-      displaySetAction("WEATHER");
       displayShowState();
       speakWeather();
     } else if (detectedDTMF == '9') {
       displaySetState(DisplayState::TTS);
-      displaySetAction("TEST MSG");
       displayShowState();
       playRadioTest();
     } else if (detectedDTMF >= '1' && detectedDTMF <= '8') {
       displaySetState(DisplayState::Prerecord);
-      int slotIndex = detectedDTMF - '1';
-      char action[16];
-      snprintf(action, sizeof(action), "PLAY SLOT %d", slotIndex + 1);
-      displaySetAction(action);
       displayShowState();
-      playSlot(slotIndex);
+      playSlot(detectedDTMF - '1');
     } else {
       displaySetState(DisplayState::Playing);
       displayShowState();
@@ -406,7 +412,6 @@ void loop() {
   if (!recording && !nowReceiving) {
     DisplayState prevState = displayGetState();
     displaySetState(DisplayState::Idle);
-    displaySetAction(NULL);  // Clear action message
     // Immediately show full idle display with IP/time when returning from active state
     if (prevState != DisplayState::Idle) {
       char timeStr[32];
@@ -450,5 +455,11 @@ void loop() {
 
     DisplayState state = displayGetState();
     updateDisplay(ipStr, timeStr, state, lastKnownRSSI, -1);
+
+    // Refresh weather cache if needed (fetchWeatherReport handles 15min cache internally)
+    if (!apMode && weatherLat != 0 && weatherLon != 0) {
+      fetchWeatherReport();
+      displaySetWeather(getWeatherDisplayString().c_str());
+    }
   }
 }

@@ -150,6 +150,35 @@ String fetchWeatherReport() {
   return report;
 }
 
+String getWeatherDisplayString() {
+  // Return cached weather data formatted for display
+  // Format: "Clear 0° | 5kmh" (~24 chars max)
+
+  // Check if we have valid weather data
+  if (weatherConditions.length() == 0) {
+    // No data - check why
+    if (weatherLat == 0 && weatherLon == 0) {
+      return "Set location in web";
+    }
+    if (WiFi.status() != WL_CONNECTED) {
+      return "No WiFi";
+    }
+    return "No weather data";
+  }
+
+  String result = weatherConditions;
+  result += " ";
+  result += String((int)round(weatherTemp)) + "deg";
+  result += " | ";
+  result += String((int)round(weatherWind)) + "kmh";
+
+  // Truncate if too long (shouldn't happen with our format)
+  if (result.length() > 31) {
+    result = result.substring(0, 31);
+  }
+  return result;
+}
+
 void speakWeather() {
   String report = fetchWeatherReport();
   Serial.printf("Weather report: %s\n", report.c_str());

@@ -2,21 +2,110 @@
 #include "config.h"
 #include <U8g2lib.h>
 #include <Wire.h>
+#include <string.h>
+#include <stdlib.h>
 
 // SH1106 OLED on I2C - same as LilyGo T-TWR library
 static U8G2_SH1106_128X64_NONAME_F_HW_I2C u8g2(U8G2_R0, U8X8_PIN_NONE);
 
+// Current display values
 static DisplayState currentState = DisplayState::Idle;
-static char currentAction[32] = "";
-static char currentChannel[16] = "";
-static char currentCTCSS[16] = "";
+static char currentChannel[16] = "";  // Frequency display
+static char currentCTCSS[28] = "";    // CTCSS display line (TX and/or RX)
 static char currentDtmf = 0;
-static bool needsRefresh = false;
+
+// Stored IP/time
+static char lastIp[32] = "";
+static char lastTime[32] = "";
+
+// Weather line (always shown at bottom)
+static char weatherLine[32] = "Fetching weather...";
+
+// Dirty flags for selective update
+static bool dirtyHeader = false;
+static bool dirtyState = false;
+static bool dirtyInfo = false;
+static bool dirtyWeather = false;
+
+// Display regions
+#define REGION_HEADER_Y 0
+#define REGION_HEADER_H 10
+#define REGION_STATE_Y 11
+#define REGION_STATE_H 20
+#define REGION_INFO_Y 33
+#define REGION_INFO_H 14
+#define REGION_WEATHER_Y 50
+#define REGION_WEATHER_H 14
+
+// SA868 CTCSS codes to frequencies (code index 1-38)
+static const char* ctcssFreqs[] = {
+  "",        // 0 = no tone
+  "67.0",    // 1
+  "71.9",    // 2
+  "74.4",    // 3
+  "77.0",    // 4
+  "79.7",    // 5
+  "82.5",    // 6
+  "85.4",    // 7
+  "88.5",    // 8
+  "91.5",    // 9
+  "94.8",    // 10
+  "97.4",    // 11
+  "100.0",   // 12
+  "103.5",   // 13
+  "107.2",   // 14
+  "110.9",   // 15
+  "114.8",   // 16
+  "118.8",   // 17
+  "123.0",   // 18
+  "127.3",   // 19
+  "131.8",   // 20
+  "136.5",   // 21
+  "141.3",   // 22
+  "146.2",   // 23
+  "151.4",   // 24
+  "156.7",   // 25
+  "162.2",   // 26
+  "167.9",   // 27
+  "173.8",   // 28
+  "179.9",   // 29
+  "186.2",   // 30
+  "192.8",   // 31
+  "203.5",   // 32
+  "210.7",   // 33
+  "218.1",   // 34
+  "225.7",   // 35
+  "233.6",   // 36
+  "241.8",   // 37
+  "250.3"    // 38
+};
+
+// Convert CTCSS code string (like "0019") to frequency string
+static const char* ctcssCodeToFreq(const char* code) {
+  if (code == NULL || strlen(code) != 4) return "";
+  int idx = atoi(code);
+  if (idx < 0 || idx > 38) return "";
+  return ctcssFreqs[idx];
+}
+
+static const char* stateToString(DisplayState state) {
+  switch (state) {
+    case DisplayState::Idle: return "IDLE";
+    case DisplayState::Receiving: return "RX";
+    case DisplayState::Recording: return "RECORD";
+    case DisplayState::Playing: return "PLAYING";
+    case DisplayState::DTMFDetected: return "DTMF";
+    case DisplayState::Transmitting: return "TX";
+    case DisplayState::Weather: return "WEATHER";
+    case DisplayState::TTS: return "TTS";
+    case DisplayState::Prerecord: return "TEST REC";
+  }
+  return "IDLE";
+}
 
 void initDisplay() {
   Serial.println("OLED: initializing SH1106...");
 
-  // Scan for OLED address (LilyGo library does this)
   uint8_t oledAddr = 0xFF;
   for (uint8_t addr = 0x3C; addr <= 0x3D; addr++) {
     Wire.beginTransmission(addr);
@@ -31,7 +120,6 @@ void initDisplay() {
     return;
   }
 
-  // Use addr << 1 as LilyGo library does
   u8g2.setI2CAddress(oledAddr << 1);
 
   if (!u8g2.begin()) {
@@ -56,7 +144,6 @@ void displayShowBoot() {
 }
 
 void displayDebug(const char* msg) {
-  // Show splash screen with status message on bottom line
   u8g2.clearBuffer();
   u8g2.setFont(u8g2_font_ncenB14_tr);
   u8g2.drawStr(0, 20, "Parrot Radio");
@@ -66,80 +153,45 @@ void displayDebug(const char* msg) {
   u8g2.sendBuffer();
 }
 
-void displayRefresh() {
-  if (!needsRefresh) return;
-  needsRefresh = false;
-
-  u8g2.clearBuffer();
-
-  // Top bar: state indicator
-  u8g2.setFont(u8g2_font_5x8_tr);
-  const char* stateStr = "IDLE";
-  switch (currentState) {
-    case DisplayState::Idle: stateStr = "IDLE"; break;
-    case DisplayState::Receiving: stateStr = "RX"; break;
-    case DisplayState::Recording: stateStr = "RECORD"; break;
-    case DisplayState::Playing: stateStr = "PLAYING"; break;
-    case DisplayState::DTMFDetected: stateStr = "DTMF"; break;
-    case DisplayState::Transmitting: stateStr = "TX"; break;
-    case DisplayState::Weather: stateStr = "WEATHER"; break;
-    case DisplayState::TTS: stateStr = "TTS"; break;
-    case DisplayState::Prerecord: stateStr = "TEST REC"; break;
+// Partial update: only redraw changed regions
+void displayUpdate() {
+  if (dirtyHeader) {
+    u8g2.setFont(u8g2_font_5x8_tr);
+    u8g2.drawStr(0, 8, lastIp);
+    u8g2.drawStr(80, 8, lastTime);
+    u8g2.updateDisplayArea(0, REGION_HEADER_Y, 128, REGION_HEADER_H);
+    dirtyHeader = false;
   }
-  u8g2.drawStr(0, 8, stateStr);
-
-  // Show action if set
-  if (currentAction[0]) {
-    u8g2.drawStr(50, 8, currentAction);
+  if (dirtyState) {
+    u8g2.setFont(u8g2_font_ncenB14_tr);
+    u8g2.drawStr(0, 28, stateToString(currentState));
+    u8g2.updateDisplayArea(0, REGION_STATE_Y, 128, REGION_STATE_H);
+    dirtyState = false;
   }
-
-  // Main display area - show channel and CTCSS
-  u8g2.setFont(u8g2_font_ncenB14_tr);
-  if (currentChannel[0]) {
-    u8g2.drawStr(0, 35, currentChannel);
-  } else {
-    u8g2.drawStr(0, 35, "---");
+  if (dirtyInfo) {
+    u8g2.setFont(u8g2_font_5x8_tr);
+    if (currentChannel[0]) {
+      u8g2.drawStr(0, 40, currentChannel);
+    }
+    if (currentCTCSS[0]) {
+      u8g2.drawStr(0, 48, currentCTCSS);
+    }
+    u8g2.updateDisplayArea(0, REGION_INFO_Y, 128, REGION_INFO_H);
+    dirtyInfo = false;
   }
-
-  // CTCSS
-  u8g2.setFont(u8g2_font_5x8_tr);
-  if (currentCTCSS[0]) {
-    char ctcssLine[24];
-    snprintf(ctcssLine, sizeof(ctcssLine), "CTCSS: %s", currentCTCSS);
-    u8g2.drawStr(0, 47, ctcssLine);
+  if (dirtyWeather) {
+    u8g2.setFont(u8g2_font_5x8_tr);
+    u8g2.drawStr(0, 61, weatherLine);
+    u8g2.updateDisplayArea(0, REGION_WEATHER_Y, 128, REGION_WEATHER_H);
+    dirtyWeather = false;
   }
-
-  // DTMF digit if detected
-  if (currentDtmf) {
-    char dtmfStr[8];
-    snprintf(dtmfStr, sizeof(dtmfStr), "DTMF: %c", currentDtmf);
-    u8g2.drawStr(80, 35, dtmfStr);
-  }
-
-  // Bottom: action text
-  if (currentAction[0]) {
-    u8g2.drawStr(0, 60, currentAction);
-  }
-
-  u8g2.sendBuffer();
-}
-
-void displaySetAction(const char* action) {
-  if (action == NULL) {
-    currentAction[0] = '\0';
-  } else {
-    strncpy(currentAction, action, sizeof(currentAction) - 1);
-    currentAction[sizeof(currentAction) - 1] = '\0';
-  }
-  needsRefresh = true;
 }
 
 void displaySetState(DisplayState state) {
   if (currentState != state) {
     currentState = state;
-    needsRefresh = true;
-    // Trigger immediate refresh so state change shows right away
-    displayRefresh();
+    dirtyState = true;
+    displayUpdate();
   }
 }
 
@@ -149,152 +201,126 @@ DisplayState displayGetState() {
 
 void displaySetChannel(const char* channel) {
   if (channel == NULL) {
-    currentChannel[0] = '\0';
-  } else {
+    if (currentChannel[0] != '\0') {
+      currentChannel[0] = '\0';
+      dirtyInfo = true;
+      displayUpdate();
+    }
+  } else if (strncmp(currentChannel, channel, sizeof(currentChannel)) != 0) {
     strncpy(currentChannel, channel, sizeof(currentChannel) - 1);
     currentChannel[sizeof(currentChannel) - 1] = '\0';
+    dirtyInfo = true;
+    displayUpdate();
   }
-  needsRefresh = true;
 }
 
-void displaySetCTCSS(const char* ctcss) {
-  if (ctcss == NULL) {
-    currentCTCSS[0] = '\0';
-  } else {
-    strncpy(currentCTCSS, ctcss, sizeof(currentCTCSS) - 1);
-    currentCTCSS[sizeof(currentCTCSS) - 1] = '\0';
+// Set CTCSS from SA868 codes. If both TX and RX are same and non-zero, show one.
+// If different and both non-zero, show both. If both zero, clear.
+void displaySetCTCSS(const char* txCode, const char* rxCode) {
+  // Convert codes to indices
+  int txIdx = (txCode && strlen(txCode) == 4) ? atoi(txCode) : 0;
+  int rxIdx = (rxCode && strlen(rxCode) == 4) ? atoi(rxCode) : 0;
+
+  if (txIdx == 0 && rxIdx == 0) {
+    // Both zero - no CTCSS
+    if (currentCTCSS[0] != '\0') {
+      currentCTCSS[0] = '\0';
+      dirtyInfo = true;
+      displayUpdate();
+    }
+    return;
   }
-  needsRefresh = true;
+
+  char newCTCSS[28];
+  if (txIdx == rxIdx) {
+    // Same tone - show single
+    snprintf(newCTCSS, sizeof(newCTCSS), "CTCSS %sHz", ctcssFreqs[txIdx]);
+  } else if (txIdx == 0) {
+    // Only RX
+    snprintf(newCTCSS, sizeof(newCTCSS), "CTCSS RX%sHz", ctcssFreqs[rxIdx]);
+  } else if (rxIdx == 0) {
+    // Only TX
+    snprintf(newCTCSS, sizeof(newCTCSS), "CTCSS TX%sHz", ctcssFreqs[txIdx]);
+  } else {
+    // Different tones - show both
+    snprintf(newCTCSS, sizeof(newCTCSS), "TX%s/RX%sHz", ctcssFreqs[txIdx], ctcssFreqs[rxIdx]);
+  }
+
+  if (strncmp(currentCTCSS, newCTCSS, sizeof(currentCTCSS)) != 0) {
+    strncpy(currentCTCSS, newCTCSS, sizeof(currentCTCSS) - 1);
+    currentCTCSS[sizeof(currentCTCSS) - 1] = '\0';
+    dirtyInfo = true;
+    displayUpdate();
+  }
 }
 
 void displaySetDtmf(char dtmf) {
-  currentDtmf = dtmf;
-  needsRefresh = true;
-  displayRefresh();  // Show immediately
+  if (currentDtmf != dtmf) {
+    currentDtmf = dtmf;
+    dirtyInfo = true;
+    displayUpdate();
+  }
 }
 
-void updateDisplay(const char* ip, const char* time, DisplayState state, int rssi, int squelch) {
-  currentState = state;
-  updateDisplayIpTime(ip, time);  // Store for later use
+void displaySetWeather(const char* weather) {
+  if (weather == NULL) {
+    if (weatherLine[0] != '\0') {
+      weatherLine[0] = '\0';
+      dirtyWeather = true;
+      displayUpdate();
+    }
+  } else if (strncmp(weatherLine, weather, sizeof(weatherLine)) != 0) {
+    strncpy(weatherLine, weather, sizeof(weatherLine) - 1);
+    weatherLine[sizeof(weatherLine) - 1] = '\0';
+    dirtyWeather = true;
+    displayUpdate();
+  }
+}
+
+// Full redraw for initial display
+void displayShowFull(const char* ip, const char* time) {
+  if (ip) {
+    strncpy(lastIp, ip, sizeof(lastIp) - 1);
+    lastIp[sizeof(lastIp) - 1] = '\0';
+  }
+  if (time) {
+    strncpy(lastTime, time, sizeof(lastTime) - 1);
+    lastTime[sizeof(lastTime) - 1] = '\0';
+  }
 
   u8g2.clearBuffer();
 
-  // Line 1: IP address (left) and Time (right) on same line
   u8g2.setFont(u8g2_font_5x8_tr);
-  if (ip) {
-    u8g2.drawStr(0, 8, ip);
-  }
-  if (time) {
-    u8g2.drawStr(80, 8, time);  // Right-aligned (128 - 8 chars * 6px = 80)
-  }
+  u8g2.drawStr(0, 8, lastIp);
+  u8g2.drawStr(80, 8, lastTime);
 
-  // Line 3: State
   u8g2.setFont(u8g2_font_ncenB14_tr);
-  const char* stateStr = "IDLE";
-  switch (state) {
-    case DisplayState::Idle: stateStr = "IDLE"; break;
-    case DisplayState::Receiving: stateStr = "RX"; break;
-    case DisplayState::Recording: stateStr = "RECORDING"; break;
-    case DisplayState::Playing: stateStr = "PLAYING"; break;
-    case DisplayState::DTMFDetected: stateStr = "DTMF"; break;
-    case DisplayState::Transmitting: stateStr = "TX"; break;
-  }
-  u8g2.drawStr(0, 30, stateStr);
+  u8g2.drawStr(0, 28, stateToString(currentState));
 
-  // Line 4: Channel + CTCSS
   u8g2.setFont(u8g2_font_5x8_tr);
   if (currentChannel[0]) {
-    u8g2.drawStr(0, 42, currentChannel);
+    u8g2.drawStr(0, 40, currentChannel);
   }
   if (currentCTCSS[0]) {
-    u8g2.drawStr(0, 52, currentCTCSS);
+    u8g2.drawStr(0, 48, currentCTCSS);
   }
-
-  // RSSI / Squelch
-  if (rssi > 0) {
-    char rssiStr[16];
-    snprintf(rssiStr, sizeof(rssiStr), "RSSI:%d", rssi);
-    u8g2.drawStr(64, 42, rssiStr);
-  }
-  if (squelch >= 0) {
-    char sqlStr[16];
-    snprintf(sqlStr, sizeof(sqlStr), "SQL:%d", squelch);
-    u8g2.drawStr(64, 52, sqlStr);
-  }
-
-  // DTMF if detected
-  if (currentDtmf) {
-    char dtmfStr[8];
-    snprintf(dtmfStr, sizeof(dtmfStr), "DTMF:%c", currentDtmf);
-    u8g2.drawStr(0, 62, dtmfStr);
-  }
-
-  // Action if active
-  if (currentAction[0]) {
-    u8g2.drawStr(40, 62, currentAction);
-  }
+  u8g2.drawStr(0, 61, weatherLine);
 
   u8g2.sendBuffer();
+
+  dirtyHeader = false;
+  dirtyState = false;
+  dirtyInfo = false;
+  dirtyWeather = false;
 }
 
-// Show full display with current state/action - uses stored IP/time from last updateDisplay call
-void displayShowFull(const char* ip, const char* time) {
-  u8g2.clearBuffer();
-
-  // Line 1: IP address (left) and Time (right)
-  u8g2.setFont(u8g2_font_5x8_tr);
-  if (ip) {
-    u8g2.drawStr(0, 8, ip);
-  }
-  if (time) {
-    u8g2.drawStr(80, 8, time);
-  }
-
-  // Line 2: State
-  u8g2.setFont(u8g2_font_ncenB14_tr);
-  const char* stateStr = "IDLE";
-  switch (currentState) {
-    case DisplayState::Idle: stateStr = "IDLE"; break;
-    case DisplayState::Receiving: stateStr = "RX"; break;
-    case DisplayState::Recording: stateStr = "RECORDING"; break;
-    case DisplayState::Playing: stateStr = "PLAYING"; break;
-    case DisplayState::DTMFDetected: stateStr = "DTMF"; break;
-    case DisplayState::Transmitting: stateStr = "TX"; break;
-    case DisplayState::Weather: stateStr = "WEATHER"; break;
-    case DisplayState::TTS: stateStr = "TTS"; break;
-    case DisplayState::Prerecord: stateStr = "PRERECORD"; break;
-  }
-  u8g2.drawStr(0, 30, stateStr);
-
-  // Line 3: Channel or action
-  u8g2.setFont(u8g2_font_5x8_tr);
-  if (currentAction[0]) {
-    u8g2.drawStr(0, 42, currentAction);
-  } else if (currentChannel[0]) {
-    u8g2.drawStr(0, 42, currentChannel);
-  }
-
-  // DTMF if detected
-  if (currentDtmf) {
-    char dtmfStr[8];
-    snprintf(dtmfStr, sizeof(dtmfStr), "DTMF:%c", currentDtmf);
-    u8g2.drawStr(80, 42, dtmfStr);
-  }
-
-  u8g2.sendBuffer();
+// For compatibility
+void updateDisplay(const char* ip, const char* time, DisplayState state, int rssi, int squelch) {
+  currentState = state;
+  displayShowFull(ip, time);
 }
 
-// Static storage for last IP/time so displayShowState can use them
-static char lastIp[32] = "";
-static char lastTime[32] = "";
-
-// Show current state/action with last known IP/time - call this during active states
+// Show state during active playback
 void displayShowState() {
-  displayShowFull(lastIp[0] ? lastIp : NULL, lastTime[0] ? lastTime : NULL);
-}
-
-// Update the stored IP/time (called by updateDisplay)
-void updateDisplayIpTime(const char* ip, const char* time) {
-  if (ip) strncpy(lastIp, ip, sizeof(lastIp) - 1);
-  if (time) strncpy(lastTime, time, sizeof(lastTime) - 1);
+  displayShowFull(lastIp, lastTime);
 }

@@ -4,6 +4,63 @@
 #include <WiFi.h>
 #include <time.h>
 
+// Generate CTCSS dropdown HTML. code is current value like "0000", "0019", etc.
+static String ctcssDropdown(const char* name, const String& currentCode) {
+  // SA868 CTCSS tones: index 1-38, index 0 = no tone
+  static const struct { const char* code; const char* freq; } tones[] = {
+    {"0000", "None"},
+    {"0001", "67.0 Hz"},
+    {"0002", "71.9 Hz"},
+    {"0003", "74.4 Hz"},
+    {"0004", "77.0 Hz"},
+    {"0005", "79.7 Hz"},
+    {"0006", "82.5 Hz"},
+    {"0007", "85.4 Hz"},
+    {"0008", "88.5 Hz"},
+    {"0009", "91.5 Hz"},
+    {"0010", "94.8 Hz"},
+    {"0011", "97.4 Hz"},
+    {"0012", "100.0 Hz"},
+    {"0013", "103.5 Hz"},
+    {"0014", "107.2 Hz"},
+    {"0015", "110.9 Hz"},
+    {"0016", "114.8 Hz"},
+    {"0017", "118.8 Hz"},
+    {"0018", "123.0 Hz"},
+    {"0019", "127.3 Hz"},
+    {"0020", "131.8 Hz"},
+    {"0021", "136.5 Hz"},
+    {"0022", "141.3 Hz"},
+    {"0023", "146.2 Hz"},
+    {"0024", "151.4 Hz"},
+    {"0025", "156.7 Hz"},
+    {"0026", "162.2 Hz"},
+    {"0027", "167.9 Hz"},
+    {"0028", "173.8 Hz"},
+    {"0029", "179.9 Hz"},
+    {"0030", "186.2 Hz"},
+    {"0031", "192.8 Hz"},
+    {"0032", "203.5 Hz"},
+    {"0033", "210.7 Hz"},
+    {"0034", "218.1 Hz"},
+    {"0035", "225.7 Hz"},
+    {"0036", "233.6 Hz"},
+    {"0037", "241.8 Hz"},
+    {"0038", "250.3 Hz"}
+  };
+
+  String html = "<select name='" + String(name) + "'>";
+  for (size_t i = 0; i < sizeof(tones) / sizeof(tones[0]); i++) {
+    html += "<option value='" + String(tones[i].code) + "'";
+    if (currentCode == tones[i].code) {
+      html += " selected";
+    }
+    html += ">" + String(tones[i].code) + " - " + String(tones[i].freq) + "</option>";
+  }
+  html += "</select>";
+  return html;
+}
+
 void handleRoot() {
   String html = "<!DOCTYPE html><html><head><title>Radio Parrot</title>";
   html += "<meta name='viewport' content='width=device-width, initial-scale=1'>";
@@ -38,8 +95,10 @@ void handleRoot() {
   // Radio settings
   html += "<h2>Radio Settings</h2>";
   html += "<label>Frequency (MHz):</label><input name='freq' value='" + radioFreq + "' placeholder='451.0000'>";
-  html += "<label>TX CTCSS (0000=none):</label><input name='txctcss' value='" + radioTxCTCSS + "' placeholder='0000'>";
-  html += "<label>RX CTCSS (0000=none):</label><input name='rxctcss' value='" + radioRxCTCSS + "' placeholder='0000'>";
+  html += "<label>TX CTCSS:</label>";
+  html += ctcssDropdown("txctcss", radioTxCTCSS);
+  html += "<label>RX CTCSS:</label>";
+  html += ctcssDropdown("rxctcss", radioRxCTCSS);
   html += "<label>Squelch (0-8):</label><input name='squelch' type='number' min='0' max='8' value='" + String(radioSquelch) + "'>";
   html += "<label>SA868 Volume (0-8):</label><input name='radiovol' type='number' min='0' max='8' value='" + String(radioVolume) + "'>";
   html += "<label>SA868 Filter: Bandpass:</label><input name='filterbp' type='number' min='0' max='1' value='" + String(radioFilterBP) + "'>";
