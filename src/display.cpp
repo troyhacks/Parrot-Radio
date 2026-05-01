@@ -10,8 +10,10 @@ static U8G2_SH1106_128X64_NONAME_F_HW_I2C u8g2(U8G2_R0, U8X8_PIN_NONE);
 
 // Current display values
 static DisplayState currentState = DisplayState::Idle;
+static char currentAction[32] = "";    // Action message (overrides channel/CTCSS when set)
 static char currentChannel[16] = "";  // Frequency display
 static char currentCTCSS[28] = "";    // CTCSS display line (TX and/or RX)
+static char customStateText[20] = ""; // Custom state text override (e.g., "PLAYING 1")
 static char currentDtmf = 0;
 
 // Stored IP/time
@@ -26,6 +28,7 @@ static bool dirtyHeader = false;
 static bool dirtyState = false;
 static bool dirtyInfo = false;
 static bool dirtyWeather = false;
+static bool dirtyAction = false;
 
 // Display regions
 #define REGION_HEADER_Y 0
@@ -164,17 +167,24 @@ void displayUpdate() {
   }
   if (dirtyState) {
     u8g2.setFont(u8g2_font_ncenB14_tr);
-    u8g2.drawStr(0, 28, stateToString(currentState));
+    const char* stateText = customStateText[0] ? customStateText : stateToString(currentState);
+    u8g2.drawStr(0, 28, stateText);
     u8g2.updateDisplayArea(0, REGION_STATE_Y, 128, REGION_STATE_H);
     dirtyState = false;
   }
   if (dirtyInfo) {
     u8g2.setFont(u8g2_font_5x8_tr);
-    if (currentChannel[0]) {
-      u8g2.drawStr(0, 40, currentChannel);
-    }
-    if (currentCTCSS[0]) {
-      u8g2.drawStr(0, 48, currentCTCSS);
+    if (currentAction[0]) {
+      // Action message takes priority over channel/CTCSS
+      u8g2.drawStr(0, 40, currentAction);
+    } else {
+      // Show channel/CTCSS when no action
+      if (currentChannel[0]) {
+        u8g2.drawStr(0, 40, currentChannel);
+      }
+      if (currentCTCSS[0]) {
+        u8g2.drawStr(0, 48, currentCTCSS);
+      }
     }
     u8g2.updateDisplayArea(0, REGION_INFO_Y, 128, REGION_INFO_H);
     dirtyInfo = false;
@@ -190,9 +200,22 @@ void displayUpdate() {
 void displaySetState(DisplayState state) {
   if (currentState != state) {
     currentState = state;
+    customStateText[0] = '\0';  // Clear custom text on state change
     dirtyState = true;
     displayUpdate();
   }
+}
+
+// Set custom state text shown in large font (e.g., "PLAYING 1")
+// Call before displayShowState() to override the default state text
+void displaySetStateText(const char* text) {
+  if (text && text[0]) {
+    strncpy(customStateText, text, sizeof(customStateText) - 1);
+    customStateText[sizeof(customStateText) - 1] = '\0';
+  } else {
+    customStateText[0] = '\0';
+  }
+  dirtyState = true;
 }
 
 DisplayState displayGetState() {
@@ -209,6 +232,21 @@ void displaySetChannel(const char* channel) {
   } else if (strncmp(currentChannel, channel, sizeof(currentChannel)) != 0) {
     strncpy(currentChannel, channel, sizeof(currentChannel) - 1);
     currentChannel[sizeof(currentChannel) - 1] = '\0';
+    dirtyInfo = true;
+    displayUpdate();
+  }
+}
+
+void displaySetAction(const char* action) {
+  if (action == NULL) {
+    if (currentAction[0] != '\0') {
+      currentAction[0] = '\0';
+      dirtyInfo = true;
+      displayUpdate();
+    }
+  } else if (strncmp(currentAction, action, sizeof(currentAction)) != 0) {
+    strncpy(currentAction, action, sizeof(currentAction) - 1);
+    currentAction[sizeof(currentAction) - 1] = '\0';
     dirtyInfo = true;
     displayUpdate();
   }
@@ -234,16 +272,16 @@ void displaySetCTCSS(const char* txCode, const char* rxCode) {
   char newCTCSS[28];
   if (txIdx == rxIdx) {
     // Same tone - show single
-    snprintf(newCTCSS, sizeof(newCTCSS), "CTCSS %sHz", ctcssFreqs[txIdx]);
+    snprintf(newCTCSS, sizeof(newCTCSS), "CTCSS %s Hz", ctcssFreqs[txIdx]);
   } else if (txIdx == 0) {
     // Only RX
-    snprintf(newCTCSS, sizeof(newCTCSS), "CTCSS RX%sHz", ctcssFreqs[rxIdx]);
+    snprintf(newCTCSS, sizeof(newCTCSS), "CTCSS RX %s Hz", ctcssFreqs[rxIdx]);
   } else if (rxIdx == 0) {
     // Only TX
-    snprintf(newCTCSS, sizeof(newCTCSS), "CTCSS TX%sHz", ctcssFreqs[txIdx]);
+    snprintf(newCTCSS, sizeof(newCTCSS), "CTCSS TX %s Hz", ctcssFreqs[txIdx]);
   } else {
     // Different tones - show both
-    snprintf(newCTCSS, sizeof(newCTCSS), "TX%s/RX%sHz", ctcssFreqs[txIdx], ctcssFreqs[rxIdx]);
+    snprintf(newCTCSS, sizeof(newCTCSS), "TX %s/RX %s Hz", ctcssFreqs[txIdx], ctcssFreqs[rxIdx]);
   }
 
   if (strncmp(currentCTCSS, newCTCSS, sizeof(currentCTCSS)) != 0) {
@@ -295,14 +333,19 @@ void displayShowFull(const char* ip, const char* time) {
   u8g2.drawStr(80, 8, lastTime);
 
   u8g2.setFont(u8g2_font_ncenB14_tr);
-  u8g2.drawStr(0, 28, stateToString(currentState));
+  const char* stateText = customStateText[0] ? customStateText : stateToString(currentState);
+  u8g2.drawStr(0, 28, stateText);
 
   u8g2.setFont(u8g2_font_5x8_tr);
-  if (currentChannel[0]) {
-    u8g2.drawStr(0, 40, currentChannel);
-  }
-  if (currentCTCSS[0]) {
-    u8g2.drawStr(0, 48, currentCTCSS);
+  if (currentAction[0]) {
+    u8g2.drawStr(0, 40, currentAction);
+  } else {
+    if (currentChannel[0]) {
+      u8g2.drawStr(0, 40, currentChannel);
+    }
+    if (currentCTCSS[0]) {
+      u8g2.drawStr(0, 48, currentCTCSS);
+    }
   }
   u8g2.drawStr(0, 61, weatherLine);
 

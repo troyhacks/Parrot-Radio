@@ -87,7 +87,7 @@ String fetchWeatherReport() {
 
   // Use cached report if still fresh
   if (cachedWeatherReport.length() > 0 && millis() - weatherFetchTime < WEATHER_CACHE_MS) {
-    Serial.println("Weather: using cached report");
+    // Serial.println("Weather: using cached report");
     return cachedWeatherReport;
   }
 
@@ -167,9 +167,12 @@ String getWeatherDisplayString() {
   }
 
   String result = weatherConditions;
+  if (!result.isEmpty()) { // Arduino String uses isEmpty()
+    result[0] = toupper(result[0]);
+  }
   result += " ";
-  result += String((int)round(weatherTemp)) + "deg";
-  result += " | ";
+  result += String((int)round(weatherTemp)) + "C";
+  result += ", ";
   result += String((int)round(weatherWind)) + "kmh";
 
   // Truncate if too long (shouldn't happen with our format)

@@ -303,6 +303,7 @@ void loop() {
 
     if (detectedDTMF == '#' && dtmfHashMessage.length() > 0) {
       displaySetState(DisplayState::TTS);
+      displaySetStateText("TTS MSG");
       displayShowState();  // Show full display with IP/time
       // DTMF # - speak configurable message with macro expansion
       String expanded = expandMacros(dtmfHashMessage);
@@ -322,19 +323,27 @@ void loop() {
       speakWeather();
     } else if (detectedDTMF == '9') {
       displaySetState(DisplayState::TTS);
+      displaySetStateText("PLAY TEST");
       displayShowState();
       // DTMF 9 - play embedded radio test audio
       playRadioTest();
     } else if (detectedDTMF >= '1' && detectedDTMF <= '8') {
       displaySetState(DisplayState::Prerecord);
+      char stateText[16];
+      snprintf(stateText, sizeof(stateText), "PLAY SLOT %d", detectedDTMF - '0');
+      displaySetStateText(stateText);
       displayShowState();
       playSlot(detectedDTMF - '1');
     } else {
-      displaySetState(DisplayState::Playing);
-      displayShowState();
       // Normal parrot mode - save and playback
+      int playedSlot = nextSlot;
       saveToSlot(nextSlot);
       nextSlot = (nextSlot + 1) % MAX_SLOTS;
+      displaySetState(DisplayState::Playing);
+      char stateText[16];
+      snprintf(stateText, sizeof(stateText), "PLAYING %d", playedSlot + 1);
+      displaySetStateText(stateText);
+      displayShowState();
       playbackWithFeedback();
     }
   }
@@ -356,6 +365,7 @@ void loop() {
 
     if (detectedDTMF == '#' && dtmfHashMessage.length() > 0) {
       displaySetState(DisplayState::TTS);
+      displaySetStateText("TTS MSG");
       displayShowState();
       String expanded = expandMacros(dtmfHashMessage);
       pttOn();
@@ -373,17 +383,25 @@ void loop() {
       speakWeather();
     } else if (detectedDTMF == '9') {
       displaySetState(DisplayState::TTS);
+      displaySetStateText("PLAY TEST");
       displayShowState();
       playRadioTest();
     } else if (detectedDTMF >= '1' && detectedDTMF <= '8') {
       displaySetState(DisplayState::Prerecord);
+      char stateText[16];
+      snprintf(stateText, sizeof(stateText), "PLAY SLOT %d", detectedDTMF - '0');
+      displaySetStateText(stateText);
       displayShowState();
       playSlot(detectedDTMF - '1');
     } else {
-      displaySetState(DisplayState::Playing);
-      displayShowState();
+      int playedSlot = nextSlot;
       saveToSlot(nextSlot);
       nextSlot = (nextSlot + 1) % MAX_SLOTS;
+      displaySetState(DisplayState::Playing);
+      char stateText[16];
+      snprintf(stateText, sizeof(stateText), "PLAYING %d", playedSlot + 1);
+      displaySetStateText(stateText);
+      displayShowState();
       playbackWithFeedback();
     }
   }
@@ -412,6 +430,7 @@ void loop() {
   if (!recording && !nowReceiving) {
     DisplayState prevState = displayGetState();
     displaySetState(DisplayState::Idle);
+    displaySetAction(NULL);  // Clear action to show freq/CTCSS instead
     // Immediately show full idle display with IP/time when returning from active state
     if (prevState != DisplayState::Idle) {
       char timeStr[32];
