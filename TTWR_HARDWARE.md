@@ -154,16 +154,26 @@ setSpeakerMute(false);  // Disable ALDO3 - unmute speaker
 
 ## Display States
 
-The display shows different information based on state:
+The display has 4 lines:
 
-| State | Display |
-|-------|---------|
-| Booting | Splash screen + status message |
-| Idle | IP, Time, IDLE |
-| Recording | "RECORDING" indicator |
-| Playing | "PLAYING" indicator |
-| Transmitting | "TX" indicator (during TTS/weather/playback) |
-| DTMFDetected | Shows detected DTMF digit |
+| Line | Y range | Content |
+| --- | --- | --- |
+| Header | 0-9 | IP address (left) + Time (right) |
+| Status | 11-30 | Large status text (IDLE, RECORD, PLAYING 1, etc.) |
+| Info | 33-46 | Frequency + CTCSS (or custom action text when active) |
+| Weather | 50-63 | Weather summary always shown (e.g., "Overcast 8C") |
+
+Display states with custom status text:
+
+| State | Large Status | Info Line |
+| --- | --- | --- |
+| Idle | IDLE | Frequency + CTCSS |
+| Recording | RECORD | Frequency + CTCSS |
+| Playing (parrot) | PLAYING X | Frequency + CTCSS (X = slot recorded) |
+| Playing slot 1-8 | PLAY SLOT X | Frequency + CTCSS |
+| TTS message (#) | TTS MSG | Frequency + CTCSS |
+| Weather (*) | WEATHER | Frequency + CTCSS |
+| Play test (9) | PLAY TEST | Frequency + CTCSS |
 
 ## Known Quirks
 
@@ -173,7 +183,7 @@ The display shows different information based on state:
 
 3. **PMU before Display**: The AXP2101 PMU must be initialized and DC1 enabled before the OLED will respond to I2C commands.
 
-4. **Stack Size for TTS**: eSpeak NG TTS is stack-intensive. The loop task stack should be at least 16384 bytes:
+4. **Stack Size for TTS**: eSpeak NG TTS is stack-intensive. The loop task stack should be at least 16384 bytes (may need increased):
    ```ini
    build_flags = ... -DCONFIG_ARDUINO_LOOP_STACK_SIZE=16384
    ```
