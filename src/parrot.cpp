@@ -1,6 +1,7 @@
 #include <Arduino.h>
 #include <HardwareSerial.h>
 #include <esp_heap_caps.h>
+#include <Wire.h>
 
 #include "config.h"
 #include "rtc.h"
@@ -159,10 +160,13 @@ void setup() {
   Serial.println("Board: Original ESP32-WROVER-KIT");
 #endif
 
-  // Initialize OLED display
-  initDisplay();
-  displayShowBoot();
-  delay(1000);  // Show boot screen briefly
+  // Initialize Wire/I2C for PMU (OLED shares the same I2C bus)
+#ifdef BOARD_TTWR
+  Wire.begin(PMU_SDA, PMU_SCL);
+  Wire.setClock(400000);
+  Serial.println("Wire initialized");
+#endif
+
   Serial.printf("I2S: MCLK=%d, BCLK=%d, LRCLK=%d, DIN=%d, DOUT=%d\n",
                 pinI2S_MCLK, pinI2S_BCLK, pinI2S_LRCLK, pinI2S_DIN, pinI2S_DOUT);
   Serial.printf("Testing mode: %s\n", testingMode ? "ON" : "OFF");
@@ -184,9 +188,17 @@ void setup() {
     while (1) delay(1000);
   }
 
-  // Initialize audio hardware (board-specific: I2S or ADC/LEDC)
+  // Initialize audio hardware first (enables DC1 which powers OLED)
   initAudioHardware();
   initAudioInput();
+
+  // Give OLED time to power up after DC1 enable
+  delay(500);
+
+  // Now initialize OLED display (after OLED has power)
+  initDisplay();
+  displayDebug("Starting...");
+  delay(200);
 
   // Initialize Goertzel coefficients using actual ADC sample rate
 #ifdef BOARD_TTWR
@@ -195,18 +207,25 @@ void setup() {
   float actualSampleRate = SAMPLE_RATE;
 #endif
   initGoertzel(actualSampleRate);
+  displayDebug("Goertzel...");
+  delay(100);
 
   // Initialize SA868
   delay(500);
   while (SA868.available()) SA868.read();  // Clear receive buffer
   initializeSA868();
+  displayDebug("Radio OK");
+  delay(100);
 
   // Initialize eSpeak NG speech synthesis
   initTTS();
+  displayDebug("TTS OK");
+  delay(100);
 
   // Ignore squelch pin for 5 seconds after boot (RF noise during startup)
   wifiReadyTime = max(wifiReadyTime, millis() + 5000);
   while (wifiReadyTime > millis()) vTaskDelay(1);
+  displayDebug("Ready!");
   Serial.println("Ready for radio checks!");
 }
 
@@ -263,6 +282,9 @@ void loop() {
     delay(2000);
 
     if (detectedDTMF == '#' && dtmfHashMessage.length() > 0) {
+      displaySetState(DisplayState::TTS);
+      displaySetAction("TTS MSG");
+      displayShowState();  // Show full display with IP/time
       // DTMF # - speak configurable message with macro expansion
       String expanded = expandMacros(dtmfHashMessage);
       pttOn();
@@ -275,16 +297,28 @@ void loop() {
       delay(1000);
       pttOff();
     } else if (detectedDTMF == '*') {
+      displaySetState(DisplayState::Weather);
+      displaySetAction("WEATHER");
+      displayShowState();
       // DTMF * - speak weather (handles PTT and speech internally)
       speakWeather();
     } else if (detectedDTMF == '9') {
+      displaySetState(DisplayState::TTS);
+      displaySetAction("TEST MSG");
+      displayShowState();
       // DTMF 9 - play embedded radio test audio
       playRadioTest();
     } else if (detectedDTMF >= '1' && detectedDTMF <= '8') {
-      // DTMF 1-8 - play back requested slot
+      displaySetState(DisplayState::Prerecord);
       int slotIndex = detectedDTMF - '1';  // '1' -> slot 0, '8' -> slot 7
+      char action[16];
+      snprintf(action, sizeof(action), "PLAY SLOT %d", slotIndex + 1);
+      displaySetAction(action);
+      displayShowState();
       playSlot(slotIndex);
     } else {
+      displaySetState(DisplayState::Playing);
+      displayShowState();
       // Normal parrot mode - save and playback
       saveToSlot(nextSlot);
       nextSlot = (nextSlot + 1) % MAX_SLOTS;
@@ -308,6 +342,9 @@ void loop() {
     delay(2000);
 
     if (detectedDTMF == '#' && dtmfHashMessage.length() > 0) {
+      displaySetState(DisplayState::TTS);
+      displaySetAction("TTS MSG");
+      displayShowState();
       String expanded = expandMacros(dtmfHashMessage);
       pttOn();
       delay(600);
@@ -319,13 +356,26 @@ void loop() {
       delay(1000);
       pttOff();
     } else if (detectedDTMF == '*') {
+      displaySetState(DisplayState::Weather);
+      displaySetAction("WEATHER");
+      displayShowState();
       speakWeather();
     } else if (detectedDTMF == '9') {
+      displaySetState(DisplayState::TTS);
+      displaySetAction("TEST MSG");
+      displayShowState();
       playRadioTest();
     } else if (detectedDTMF >= '1' && detectedDTMF <= '8') {
+      displaySetState(DisplayState::Prerecord);
       int slotIndex = detectedDTMF - '1';
+      char action[16];
+      snprintf(action, sizeof(action), "PLAY SLOT %d", slotIndex + 1);
+      displaySetAction(action);
+      displayShowState();
       playSlot(slotIndex);
     } else {
+      displaySetState(DisplayState::Playing);
+      displayShowState();
       saveToSlot(nextSlot);
       nextSlot = (nextSlot + 1) % MAX_SLOTS;
       playbackWithFeedback();
@@ -354,9 +404,51 @@ void loop() {
 
   // Update display when idle
   if (!recording && !nowReceiving) {
+    DisplayState prevState = displayGetState();
     displaySetState(DisplayState::Idle);
+    displaySetAction(NULL);  // Clear action message
+    // Immediately show full idle display with IP/time when returning from active state
+    if (prevState != DisplayState::Idle) {
+      char timeStr[32];
+      char ipStr[32];
+      struct tm t;
+      if (getLocalTime(&t, 0)) {
+        snprintf(timeStr, sizeof(timeStr), "%02d:%02d:%02d", t.tm_hour, t.tm_min, t.tm_sec);
+      } else {
+        snprintf(timeStr, sizeof(timeStr), "N/A");
+      }
+      if (apMode) {
+        snprintf(ipStr, sizeof(ipStr), "AP: %s", WiFi.softAPIP().toString().c_str());
+      } else {
+        snprintf(ipStr, sizeof(ipStr), "%s", WiFi.localIP().toString().c_str());
+      }
+      updateDisplay(ipStr, timeStr, DisplayState::Idle, lastKnownRSSI, -1);
+    }
   }
 
-  // Refresh OLED display
-  displayRefresh();
+  // Refresh OLED display periodically (updateDisplay handles IP/time)
+  // Only update when idle to avoid overwriting state messages during playback
+  static unsigned long lastDisplayUpdate = 0;
+  DisplayState state = displayGetState();
+  if (!recording && !nowReceiving && state == DisplayState::Idle &&
+      millis() - lastDisplayUpdate > 5000) {
+    lastDisplayUpdate = millis();
+
+    char timeStr[32];
+    char ipStr[32];
+    struct tm t;
+    if (getLocalTime(&t, 0)) {
+      snprintf(timeStr, sizeof(timeStr), "%02d:%02d:%02d", t.tm_hour, t.tm_min, t.tm_sec);
+    } else {
+      snprintf(timeStr, sizeof(timeStr), "N/A");
+    }
+    if (apMode) {
+      snprintf(ipStr, sizeof(ipStr), "AP: %s", WiFi.softAPIP().toString().c_str());
+    } else {
+      snprintf(ipStr, sizeof(ipStr), "%s", WiFi.localIP().toString().c_str());
+    }
+
+    DisplayState state = displayGetState();
+    updateDisplay(ipStr, timeStr, state, lastKnownRSSI, -1);
+  }
 }
