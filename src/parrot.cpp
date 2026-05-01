@@ -8,6 +8,7 @@
 #include "weather.h"
 #include "radio.h"
 #include "web.h"
+#include "display.h"
 
 // ==================== Global State Definitions ====================
 // (declared extern in config.h)
@@ -66,6 +67,10 @@ String postMessage;
 // Battery reading
 float lastBatteryV = 0;
 int lastBatteryPct = -1;
+
+// AXP2101 power state
+bool extPowerConnected = false;
+bool batteryCharging = false;
 
 // Recording buffers
 int16_t* audioBuffer = nullptr;
@@ -153,6 +158,11 @@ void setup() {
 #else
   Serial.println("Board: Original ESP32-WROVER-KIT");
 #endif
+
+  // Initialize OLED display
+  initDisplay();
+  displayShowBoot();
+  delay(1000);  // Show boot screen briefly
   Serial.printf("I2S: MCLK=%d, BCLK=%d, LRCLK=%d, DIN=%d, DOUT=%d\n",
                 pinI2S_MCLK, pinI2S_BCLK, pinI2S_LRCLK, pinI2S_DIN, pinI2S_DOUT);
   Serial.printf("Testing mode: %s\n", testingMode ? "ON" : "OFF");
@@ -230,6 +240,7 @@ void loop() {
   if (nowReceiving && !wasReceiving) {
     startRecording();
     recordStartTime = millis();
+    displaySetState(DisplayState::Recording);
   }
 
   // Record audio samples via I2S
@@ -340,4 +351,12 @@ void loop() {
   }
 
   wasReceiving = nowReceiving;
+
+  // Update display when idle
+  if (!recording && !nowReceiving) {
+    displaySetState(DisplayState::Idle);
+  }
+
+  // Refresh OLED display
+  displayRefresh();
 }

@@ -152,6 +152,10 @@ extern String postMessage;
 extern float lastBatteryV;
 extern int lastBatteryPct;
 
+// AXP2101 power state
+extern bool extPowerConnected;
+extern bool batteryCharging;
+
 // Recording buffers
 extern int16_t* audioBuffer;
 extern int recordIndex;

@@ -237,6 +237,21 @@ void initAudioHardware() {
   }
   Serial.println("PMU init complete...");
 
+#ifdef BOARD_TTWR
+  // Enable OLED display power - OLED is powered by DC1 on T-TWR
+  if (pmuFound) {
+    // AXP2101 available LDOs: ALDO1-4, BLDO1-2, DLDO1-2, CPUSLDO
+    pmu.enableALDO1(); pmu.enableALDO2(); pmu.enableALDO3(); pmu.enableALDO4();
+    pmu.enableBLDO1(); pmu.enableBLDO2();
+    pmu.enableDLDO1(); pmu.enableDLDO2();
+    Serial.println("All LDOs enabled");
+
+    // Enable DC1 (OLED power) - DC1 powers ESP + OLED + PIXEL on Rev 2.1
+    pmu.enableDC1();
+    Serial.printf("DC1 enabled: %s\n", pmu.isEnableDC1() ? "yes" : "no");
+  }
+#endif
+
   // Configure MIC_CH_SEL pin to route audio to ESP32→SA868 path
   pinMode(MIC_CH_SEL_PIN, OUTPUT);
   digitalWrite(MIC_CH_SEL_PIN, LOW);  // Default: physical mic selected
@@ -279,6 +294,24 @@ void setSpeakerMute(bool mute) {
   }
 }
 
+// Update AXP2101 power state - call periodically from main loop
+void updatePowerState() {
+  if (!pmuFound) return;
+
+  extPowerConnected = pmu.isVbusIn();
+  batteryCharging = pmu.isCharging();
+
+  // Update battery voltage/percent if we have a battery
+  if (pmu.isBatteryConnect()) {
+    int mv = pmu.getBattVoltage();
+    if (mv > 0) {
+      lastBatteryV = mv / 1000.0f;
+      int pct = pmu.getBatteryPercent();
+      if (pct >= 0) lastBatteryPct = pct;
+    }
+  }
+}
+
 // ==================== Timer-driven audio output ====================
 // Ring buffer for timer-driven LEDC output at proper sample rate
 #define AUDIO_RING_BUF_SIZE 2048
@@ -298,6 +331,8 @@ float dcEstimate = 2048.0f;
 
 // Counter for consecutive squelch-HIGH readings to detect end of transmission
 static int squelchHighCount = 0;
+// DTMF check counter - samples accumulated since last DTMF check
+static int dtmfCheckCounter = 0;
 // Timestamp when current transmission started (to ignore brief squelch at start)
 static unsigned long transmissionStartTime = 0;
 // Timestamp when recording began (to compute actual vs recorded duration)
@@ -374,13 +409,11 @@ void initAudioInput() {
   adc_digi_deinitialize();
 
   // Initialize digital ADC DMA
-  // BUFFER OVERFLOW FIX: max_store_buf_size must be >> conv_num_each_intr
-  // to prevent sample drops when main loop is busy with other tasks.
-  // At 40320 Hz, 128 samples = 3.17ms. If main loop takes >3ms, samples were dropped.
-  // 4096 bytes = 1024 samples = 25ms of margin, plenty for RTOS/WiFi overhead.
+  // BUFFER OVERFLOW FIX: Use very large conv_num_each_intr to minimize interrupt overhead.
+  // At 20kHz, 1024 samples = ~51ms per interrupt — main loop can easily drain in time.
   adc_digi_init_config_t initConfig = {
-    .max_store_buf_size = 4096, // 1024 samples * 4 bytes (~25ms of safety margin)
-    .conv_num_each_intr = 256,   // Request 256 samples per interrupt (~6.3ms)
+    .max_store_buf_size = 16384, // 4096 samples * 4 bytes — large circular buffer
+    .conv_num_each_intr = 1024,  // 1024 samples per interrupt (~51ms at 20kHz)
     .adc1_chan_mask = (1 << 0), // ADC1 channel 0
     .adc2_chan_mask = 0,
   };
@@ -477,14 +510,16 @@ int audioRead(int16_t* buffer, size_t samples) {
 
   // Read audio samples via ADC DMA - matching WLED-MM DMAadcSource
   // For ESP32-S3, ADC_RESULT_BYTE = 4 (SOC_ADC_DIGI_RESULT_BYTES)
-  uint8_t result[512 * 4];  // 512 samples * 4 bytes
+  // Buffer must handle up to conv_num_each_intr=1024 samples
+  // Static to avoid stack overflow in main loop task
+  static uint8_t result[1024 * 4];  // 1024 samples * 4 bytes
   uint32_t ret_num;
 
   esp_err_t err = adc_digi_read_bytes(result, sizeof(result), &ret_num, 30);
   if (err != ESP_OK && err != ESP_ERR_INVALID_STATE) {
-    Serial.printf("audioRead: adc_digi_read_bytes err=%d\n", err);
+    // Error recovery - use analogRead fallback
     for (size_t i = 0; i < samples; i++) {
-      buffer[i] = (int16_t)(analogRead(RADIO_AUDIO_PIN) - 2048) << 4;
+      buffer[i] = (int16_t)(analogRead(RADIO_AUDIO_PIN) - (int)adcCenter) << 4;
     }
     return samples;
   }
@@ -702,6 +737,7 @@ void startRecording() {
   peakAudioLevel = 0;
   clipCount = 0;
   detectedDTMF = 0;  // Reset DTMF detection
+  dtmfCheckCounter = 0;  // Reset DTMF check counter
   lastKnownRSSI = 0;  // Reset RSSI cache at start of new recording
   squelchHighCount = 0;  // Reset squelch counter
   transmissionStartTime = 0;  // Will be set when squelch next goes LOW
@@ -740,9 +776,10 @@ void stopRecording() {
 void recordAudioSamples() {
 #ifdef BOARD_TTWR
   // T-TWR: Read audio via ADC DMA from GPIO 1
-  // Increased to 256 samples to drain DMA buffer faster and prevent overflow artifacts
-  int16_t samples[256];
-  int actual = audioRead(samples, 256);
+  // Increased to 1024 samples to match conv_num_each_intr=1024 DMA interrupt size
+  // Static to avoid stack overflow in main loop task
+  static int16_t samples[1024];
+  int actual = audioRead(samples, 1024);
 
   // Debug: show actual returned count for first few calls
   static int dbgRec = 0;
@@ -795,8 +832,7 @@ void recordAudioSamples() {
 
   // DTMF detection - check periodically during recording
   // Only detect once (first DTMF wins)
-  static int dtmfCheckCounter = 0;
-  dtmfCheckCounter += 1;
+  dtmfCheckCounter += actual;  // Count samples, not calls (batch size varies)
   if (detectedDTMF == 0 && dtmfCheckCounter >= DTMF_BLOCK_SIZE && recordIndex >= DTMF_BLOCK_SIZE) {
     dtmfCheckCounter = 0;
     // Check the most recent samples for DTMF

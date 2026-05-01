@@ -28,6 +28,9 @@ void setAudioRoutingToRadio(bool enable);
 // T-TWR specific: mute/unmute speaker via PMU
 void setSpeakerMute(bool mute);
 
+// T-TWR specific: update AXP2101 power state (call periodically from main loop)
+void updatePowerState();
+
 // SA868 radio functions
 void initializeSA868();
 int getRSSI();

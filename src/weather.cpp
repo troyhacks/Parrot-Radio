@@ -9,6 +9,15 @@
 static String cachedWeatherReport;
 static unsigned long weatherFetchTime = 0;
 
+// Exported weather state for macro expansion
+float weatherTemp = 0;
+float weatherFeelsLike = 0;
+float weatherHumidity = 0;
+float weatherWind = 0;
+float weatherPressure = 1013.25f;
+int weatherCode = 0;
+String weatherConditions = "";
+
 // Convert Open-Meteo weather code to description
 static String weatherCodeToText(int code) {
   if (code == 0) return "clear sky";
@@ -107,7 +116,15 @@ String fetchWeatherReport() {
     float feelsLike = extractJsonFloat(current, "apparent_temperature");
     int humidity = (int)extractJsonFloat(current, "relative_humidity_2m");
     float wind = extractJsonFloat(current, "wind_speed_10m");
-    int weatherCode = extractJsonInt(current, "weather_code");
+    int code = extractJsonInt(current, "weather_code");
+
+    // Update exported weather state
+    weatherTemp = temp;
+    weatherFeelsLike = feelsLike;
+    weatherHumidity = humidity;
+    weatherWind = wind;
+    weatherCode = code;
+    weatherConditions = weatherCodeToText(code);
 
     // eSpeak handles number pronunciation natively
     report = weatherCodeToText(weatherCode);
