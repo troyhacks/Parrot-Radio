@@ -29,5 +29,6 @@ void displaySetAction(const char* action);
 void displaySetCTCSS(const char* txCode, const char* rxCode);
 void displaySetDtmf(char dtmf);
 void displaySetWeather(const char* weather);
+void displaySetGPS(const char* gps);
 void updateDisplay(const char* ip, const char* time, DisplayState state, int rssi, int squelch);
 void updateDisplayIpTime(const char* ip, const char* time);

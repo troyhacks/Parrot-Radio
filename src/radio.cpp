@@ -838,7 +838,7 @@ void recordAudioSamples() {
     // Check the most recent samples for DTMF
     int startIdx = max(0, recordIndex - DTMF_BLOCK_SIZE);
     char dtmf = detectDTMF(&audioBuffer[startIdx], DTMF_BLOCK_SIZE);
-    if ((dtmf >= '1' && dtmf <= '9') || dtmf == '*' || dtmf == '#') {
+    if ((dtmf >= '1' && dtmf <= '9') || (dtmf >= 'A' && dtmf <= 'D') || dtmf == '*' || dtmf == '#') {
       detectedDTMF = dtmf;
       Serial.printf("*** DTMF %c detected ***\n", dtmf);
     }

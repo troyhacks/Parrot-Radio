@@ -2,8 +2,19 @@
 #include "config.h"
 #include <WiFi.h>
 #include <time.h>
+#include <freertos/FreeRTOS.h>
+#include <freertos/task.h>
+#include <freertos/queue.h>
 #include "espeak.h"
 #include "radio.h"
+#include "weather_sensor.h"
+#include "gps.h"
+#include "sun.h"
+
+// TTS task configuration
+#define TTS_TASK_STACK_SIZE (64 * 1024)  // 64KB stack in BYTES (ESP32 IDF uses bytes, not words)
+static TaskHandle_t s_ttsTaskHandle = nullptr;
+static QueueHandle_t s_ttsQueue = nullptr;
 
 // TTS output buffer
 static int16_t ttsBuffer[512];
@@ -49,6 +60,86 @@ public:
 static TTSOutput ttsOut;
 static ESpeak espeak(ttsOut);
 
+// ==================== Helper Functions ====================
+// Convert integer to English words (avoids espeak deep recursion)
+static const char* s_ones[] = {"zero", "one", "two", "three", "four", "five", "six", "seven", "eight", "nine",
+                                "ten", "eleven", "twelve", "thirteen", "fourteen", "fifteen", "sixteen", "seventeen", "eighteen", "nineteen"};
+static const char* s_tens[] = {"", "", "twenty", "thirty", "forty", "fifty", "sixty", "seventy", "eighty", "ninety"};
+
+static String intToWords(int n) {
+  if (n == 0) return "zero";
+  String s;
+  if (n < 0) { s = "minus "; n = -n; }
+  if (n >= 100) { s += s_ones[n/100]; s += " hundred "; n %= 100; }
+  if (n >= 20) { s += s_tens[n/10]; if (n%10) { s += " "; s += s_ones[n%10]; } }
+  else if (n >= 1) s += s_ones[n];
+  return s;
+}
+
+// Format hour:minute as English words to avoid espeak number→words translation
+// e.g. 3:33 → "three thirty three PM", 6:08 → "six oh eight AM"
+static String formatTimeHM(int hour, int minute) {
+  if (hour < 0 || minute < 0) return "unknown";
+  String s;
+  int h12 = hour % 12;
+  if (h12 == 0) h12 = 12;
+  s = intToWords(h12);
+  // intToWords handles 0-59 correctly including teens (15="fifteen" not "ten five")
+  if (minute == 0) {
+    // Exact hour — say nothing more, e.g. "six AM"
+  } else if (minute < 10) {
+    s += " oh " + intToWords(minute);  // e.g. "six oh eight"
+  } else {
+    s += " " + intToWords(minute);     // e.g. "three thirty three"
+  }
+  s += hour < 12 ? " AM" : " PM";
+  return s;
+}
+
+// Format IP address for TTS — first 3 octets as spaced digits, last octet as words (0-99) or digits (100+)
+// e.g. "192.168.1.46" → "1 9 2 dot 1 6 8 dot 1 dot forty six"
+static String formatIPWords(const String& ip) {
+  String out;
+  int octetValues[4] = {0, 0, 0, 0};
+  int octetCount = 0;
+  int currentOctet = 0;
+
+  for (size_t i = 0; i < ip.length(); i++) {
+    if (ip[i] == '.') {
+      octetValues[octetCount++] = currentOctet;
+      currentOctet = 0;
+    } else {
+      currentOctet = currentOctet * 10 + (ip[i] - '0');
+    }
+  }
+  octetValues[octetCount] = currentOctet;  // last octet
+
+  for (int i = 0; i <= octetCount; i++) {
+    if (i > 0) out += " dot ";
+    if (i < 3) {
+      // First 3 octets: spaced digits
+      String num = String(octetValues[i]);
+      for (size_t j = 0; j < num.length(); j++) {
+        out += num[j];
+        out += " ";
+      }
+    } else {
+      // Last octet: words for 0-99, digits for 100+
+      int last = octetValues[i];
+      if (last <= 99) {
+        out += intToWords(last);
+      } else {
+        String num = String(last);
+        for (size_t j = 0; j < num.length(); j++) {
+          out += num[j];
+          out += " ";
+        }
+      }
+    }
+  }
+  return out;
+}
+
 // ==================== Macro Expansion ====================
 // Expands {tokens} in message strings with live values
 String expandMacros(const String &text) {
@@ -56,24 +147,12 @@ String expandMacros(const String &text) {
   // Date/time macros
   struct tm t;
   if (getLocalTime(&t, 0)) {
-    char buf[32];
+    char buf[64];  // Larger buffer to prevent overflow
     strftime(buf, sizeof(buf), "%Y-%m-%d", &t);
     result.replace("{date}", buf);
     strftime(buf, sizeof(buf), "%H:%M", &t);
     result.replace("{time}", buf);
-    {
-      int hour12 = t.tm_hour % 12;
-      if (hour12 == 0) hour12 = 12;
-      const char* ampm = t.tm_hour < 12 ? "AM" : "PM";
-      if (t.tm_min == 0) {
-        snprintf(buf, sizeof(buf), "%d %s", hour12, ampm);
-      } else if (t.tm_min < 10) {
-        snprintf(buf, sizeof(buf), "%d oh %d %s", hour12, t.tm_min, ampm);
-      } else {
-        snprintf(buf, sizeof(buf), "%d %d %s", hour12, t.tm_min, ampm);
-      }
-      result.replace("{time12}", buf);
-    }
+    result.replace("{time12}", formatTimeHM(t.tm_hour, t.tm_min));
     strftime(buf, sizeof(buf), "%A", &t);
     result.replace("{day}", buf);
     strftime(buf, sizeof(buf), "%H", &t);
@@ -90,60 +169,86 @@ String expandMacros(const String &text) {
   }
   // Battery macros
   if (lastBatteryPct >= 0) {
-    result.replace("{battery}", String(lastBatteryPct) + " percent");
-    result.replace("{voltage}", String(lastBatteryV, 1) + " volts");
+    result.replace("{battery}", intToWords(lastBatteryPct) + " percent");
+    result.replace("{voltage}", intToWords((int)lastBatteryV) + " point " + intToWords((int)(lastBatteryV * 10) % 10) + " volts");
   } else {
     result.replace("{battery}", "unknown");
     result.replace("{voltage}", "unknown");
   }
   // Slot macros
-  result.replace("{slot}", String(nextSlot + 1));
+  result.replace("{slot}", intToWords(nextSlot + 1));
   int usedSlots = 0;
   for (int i = 0; i < MAX_SLOTS; i++) {
     if (slots[i].sampleCount > 0) usedSlots++;
   }
-  result.replace("{slots_used}", String(usedSlots));
-  result.replace("{slots_total}", String(MAX_SLOTS));
+  result.replace("{slots_used}", intToWords(usedSlots));
+  result.replace("{slots_total}", intToWords(MAX_SLOTS));
   // Radio/system macros
   result.replace("{freq}", radioFreq);
-  result.replace("{uptime}", String(millis() / 60000) + " minutes");
-  result.replace("{ip}", WiFi.localIP().toString());
+  result.replace("{uptime}", intToWords(millis() / 60000) + " minutes");
+  result.replace("{ip}", formatIPWords(WiFi.localIP().toString()));
+  // Local weather sensor macros (BME280/BMP280)
+  if (localWeather.valid) {
+    result.replace("{localtemp}", intToWords((int)round(localWeather.temperature)) + " degrees");
+    result.replace("{localhumidity}", intToWords((int)round(localWeather.humidity)) + " percent");
+    result.replace("{localpressure}", intToWords((int)round(localWeather.pressure / 10.0f)) + " hectopascals");
+  } else {
+    result.replace("{localtemp}", "sensor unavailable");
+    result.replace("{localhumidity}", "sensor unavailable");
+    result.replace("{localpressure}", "sensor unavailable");
+  }
+
+  // Sun times (calculated from weatherLat/weatherLon)
+  {
+    time_t now = time(nullptr);
+    struct tm* lt = localtime(&now);
+    SolarTimes st = calculateSunTimes(weatherLat, weatherLon, lt->tm_year + 1900, lt->tm_mon + 1, lt->tm_mday);
+    if (st.valid) {
+      result.replace("{sunrise}", formatTimeHM(st.sunriseHour, st.sunriseMinute));
+      result.replace("{sunset}", formatTimeHM(st.sunsetHour, st.sunsetMinute));
+      result.replace("{civil_dawn}", formatTimeHM(st.sunriseCivilHour, st.sunriseCivilMinute));
+      result.replace("{civil_dusk}", formatTimeHM(st.sunsetCivilHour, st.sunsetCivilMinute));
+      result.replace("{nautical_dawn}", formatTimeHM(st.sunriseNauticalHour, st.sunriseNauticalMinute));
+      result.replace("{nautical_dusk}", formatTimeHM(st.sunsetNauticalHour, st.sunsetNauticalMinute));
+      result.replace("{astronomical_dawn}", formatTimeHM(st.sunriseAstronomicalHour, st.sunriseAstronomicalMinute));
+      result.replace("{astronomical_dusk}", formatTimeHM(st.sunsetAstronomicalHour, st.sunsetAstronomicalMinute));
+      result.replace("{golden_hour_morning}", formatTimeHM(st.goldenHourMorningStartHour, st.goldenHourMorningStartMinute));
+      result.replace("{golden_hour_evening}", formatTimeHM(st.goldenHourEveningEndHour, st.goldenHourEveningEndMinute));
+    } else {
+      result.replace("{sunrise}", "unknown");
+      result.replace("{sunset}", "unknown");
+      result.replace("{civil_dawn}", "unknown");
+      result.replace("{civil_dusk}", "unknown");
+      result.replace("{nautical_dawn}", "unknown");
+      result.replace("{nautical_dusk}", "unknown");
+      result.replace("{astronomical_dawn}", "unknown");
+      result.replace("{astronomical_dusk}", "unknown");
+      result.replace("{golden_hour_morning}", "unknown");
+      result.replace("{golden_hour_evening}", "unknown");
+    }
+  }
+
+  // GPS coordinates
+  if (gpsData.valid) {
+    result.replace("{gps_lat}", String(gpsData.latitude, 4));
+    result.replace("{gps_lon}", String(gpsData.longitude, 4));
+  } else {
+    result.replace("{gps_lat}", "no fix");
+    result.replace("{gps_lon}", "no fix");
+  }
+
+  // Timezone
+  result.replace("{timezone}", timezonePosix.length() > 0 ? timezonePosix : "UTC");
+
   return result;
 }
 
-// Phoneme pronunciations for words eSpeak's minimal dictionary can't handle
-// Uses eSpeak Kirshenbaum notation inside [[ ]] brackets (requires espeakPHONEMES flag)
-struct PhonemeEntry { const char* word; const char* phonemes; };
-static const PhonemeEntry ttsPronunciations[] = {
-  { "overcast",     "[['oUv@kast]]" },
-  // { "drizzle",      "[[dr'Iz@L]]" },
-  // { "thunderstorm", "[[T'Vnd@stO:rm]]" },
-};
-static const int ttsPronunciationCount = sizeof(ttsPronunciations) / sizeof(ttsPronunciations[0]);
-
-// Case-insensitive whole-word replacement with phoneme codes
-static void applyPhonemes(String &text) {
-  for (int i = 0; i < ttsPronunciationCount; i++) {
-    String wordLower = ttsPronunciations[i].word;
-    String textLower = text;
-    textLower.toLowerCase();
-    int pos = 0;
-    while ((pos = textLower.indexOf(wordLower, pos)) >= 0) {
-      int endPos = pos + wordLower.length();
-      bool wordStart = (pos == 0 || !isAlpha(text[pos - 1]));
-      bool wordEnd = (endPos >= (int)text.length() || !isAlpha(text[endPos]));
-      if (wordStart && wordEnd) {
-        String replacement = ttsPronunciations[i].phonemes;
-        text = text.substring(0, pos) + replacement + text.substring(endPos);
-        textLower = text;
-        textLower.toLowerCase();
-        pos += replacement.length();
-      } else {
-        pos++;
-      }
-    }
-  }
-}
+// Phoneme pronunciations — DISABLED
+// espeak's number→words dictionary lookup can recursively traverse phoneme entries
+// causing stack overflow on the loopTask stack even for simple text.
+// All phoneme processing is disabled. Custom pronunciations should be implemented
+// by moving TTS to a dedicated FreeRTOS task with a larger stack (e.g., 64KB).
+static void applyPhonemes(String& /*text*/) {}
 
 // Text sanitization for TTS
 String sanitizeForTTS(String text) {
@@ -166,7 +271,8 @@ String sanitizeForTTS(String text) {
   text.replace("km/h", " kilometers per hour");
 
   // Replace words eSpeak's minimal dictionary can't pronounce with phoneme codes
-  applyPhonemes(text);
+  // DISABLED — causes stack overflow in espeak's number→words translation
+  // applyPhonemes(text);
 
   // Strip any remaining non-ASCII characters eSpeak can't pronounce
   String clean;
@@ -188,25 +294,65 @@ String sanitizeForTTS(String text) {
   return clean;
 }
 
+// Forward declaration for TTS task
+static void ttsTaskFn(void* param);
+
 void initTTS() {
   // Register empty config file — eSpeak's LoadConfig() tries to open /mem/data/config
   // which doesn't exist in the in-memory PROGMEM filesystem, causing a harmless warning.
   espeak.add("/mem/data/config", "", 0);
   if (espeak.begin()) {
-    espeak.setVoice("en");
+    espeak.setVoice("en-us");  // Use US English voice for clarity
     espeak.setRate(160);  // Default 175, range 80-450
-    espeak.setFlags(espeakCHARS_AUTO | espeakPHONEMES);  // Enable inline [[ ]] phoneme codes
+    espeak.setFlags(espeakCHARS_AUTO);  // No phoneme codes needed
     Serial.println("eSpeak NG initialized");
   } else {
     Serial.println("ERROR: eSpeak NG init failed!");
   }
+
+  // Create TTS queue and start TTS task with 64KB stack
+  s_ttsQueue = xQueueCreate(2, sizeof(char[512]));
+  if (s_ttsQueue == nullptr) {
+    Serial.println("ERROR: TTS queue creation failed!");
+    return;
+  }
+  BaseType_t created = xTaskCreatePinnedToCore(
+    ttsTaskFn,
+    "tts",
+    TTS_TASK_STACK_SIZE,  // bytes — ESP32 IDF xTaskCreatePinnedToCore uses bytes, not words
+    nullptr,
+    configMAX_PRIORITIES - 2,
+    &s_ttsTaskHandle,
+    0
+  );
+  if (created != pdPASS) {
+    Serial.println("ERROR: TTS task creation failed!");
+  } else {
+    Serial.println("TTS task started");
+  }
+}
+
+
+// TTS task — runs with 64KB stack to handle espeak's deep recursion
+static void ttsTaskFn(void* param) {
+  for (;;) {
+    char textBuf[512];
+    if (xQueueReceive(s_ttsQueue, textBuf, portMAX_DELAY) == pdTRUE) {
+      String processed = sanitizeForTTS(String(textBuf));
+      Serial.printf("TTS: %s\n", processed.c_str());
+      espeak.say(processed.c_str());
+      ttsOut.flush();
+    }
+  }
 }
 
 void sayText(const char* text) {
-  String processed = sanitizeForTTS(String(text));
-  Serial.printf("TTS: %s\n", processed.c_str());
-  espeak.say(processed.c_str());
-  ttsOut.flush();
+  if (s_ttsQueue == nullptr) return;
+  // Send to TTS task queue (non-blocking, drops if queue full)
+  char textBuf[512];
+  strncpy(textBuf, text, sizeof(textBuf) - 1);
+  textBuf[sizeof(textBuf) - 1] = '\0';
+  xQueueSend(s_ttsQueue, textBuf, 0);
 }
 
 void playTone(int frequency, int duration) {

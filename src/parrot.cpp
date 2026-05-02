@@ -2,6 +2,7 @@
 #include <HardwareSerial.h>
 #include <esp_heap_caps.h>
 #include <Wire.h>
+#include <time.h>
 
 #include "config.h"
 #include "rtc.h"
@@ -10,6 +11,9 @@
 #include "radio.h"
 #include "web.h"
 #include "display.h"
+#include "gps.h"
+#include "sun.h"
+#include "weather_sensor.h"
 
 // ==================== Global State Definitions ====================
 // (declared extern in config.h)
@@ -53,6 +57,9 @@ int pinVBAT;
 // Testing mode
 bool testingMode;
 
+// DTMF A reboot setting
+bool dtmfARebootEnabled = true;
+
 // DTMF # message
 String dtmfHashMessage;
 
@@ -60,6 +67,7 @@ String dtmfHashMessage;
 String timezonePosix;
 bool rtcFound = false;
 bool ntpSynced = false;
+long gmtOffsetSeconds = 0;  // UTC offset in seconds, computed after NTP sync
 
 // Pre/post messages
 String preMessage;
@@ -146,6 +154,9 @@ void setup() {
     syncNTP();
   }
 
+  // Initialize GPS
+  initGPS();
+
   // Pin setup (using loaded preferences)
   pinMode(pinPTT, OUTPUT);
   digitalWrite(pinPTT, HIGH);  // Ensure RX mode
@@ -165,6 +176,9 @@ void setup() {
   Wire.begin(PMU_SDA, PMU_SCL);
   Wire.setClock(400000);
   Serial.println("Wire initialized");
+
+  // Initialize BME280/BMP280 weather sensor
+  initWeatherSensor();
 #endif
 
   Serial.printf("I2S: MCLK=%d, BCLK=%d, LRCLK=%d, DIN=%d, DOUT=%d\n",
@@ -259,6 +273,11 @@ void loop() {
     dnsServer.processNextRequest();
   }
 
+  // Update GPS data
+  updateGPS();
+  updateTimezoneFromGPS();  // Keep timezone updated from GPS coordinates
+  displaySetGPS(gpsHasFix() ? "GPS OK" : "GPS ..");
+
   static bool wasReceiving = false;
   static unsigned long recordStartTime = 0;
   static unsigned long lastRSSISample = 0;
@@ -334,6 +353,138 @@ void loop() {
       displaySetStateText(stateText);
       displayShowState();
       playSlot(detectedDTMF - '1');
+    } else if (detectedDTMF == 'A') {
+      // DTMF A - speak sunrise/sunset times
+      displaySetState(DisplayState::TTS);
+      displaySetStateText("SUN");
+      displayShowState();
+      pttOn();
+      delay(600);
+      setAudioRoutingToRadio(true);
+      setSpeakerMute(true);
+      {
+        time_t now = time(nullptr);
+        struct tm* t = localtime(&now);
+        SolarTimes st = calculateSunTimes(weatherLat, weatherLon, t->tm_year + 1900, t->tm_mon + 1, t->tm_mday);
+        char buf[512];
+        if (st.valid) {
+          int duskH12 = st.sunsetAstronomicalHour % 12;
+          if (duskH12 == 0) duskH12 = 12;
+          const char* duskAmPm = st.sunsetAstronomicalHour >= 12 ? "PM" : "AM";
+
+          int currentMins = t->tm_hour * 60 + t->tm_min;
+          int sunriseMins = st.sunriseHour * 60 + st.sunriseMinute;
+          int sunsetMins = st.sunsetHour * 60 + st.sunsetMinute;
+          const char* nextGoldenType = "";
+          int nextGoldenH = -1, nextGoldenM = -1;
+          if (currentMins < sunriseMins) {
+            nextGoldenType = "morning";
+            nextGoldenH = st.goldenHourMorningStartHour;
+            nextGoldenM = st.goldenHourMorningStartMinute;
+          } else if (currentMins < sunsetMins) {
+            nextGoldenType = "evening";
+            nextGoldenH = st.goldenHourEveningEndHour;
+            nextGoldenM = st.goldenHourEveningEndMinute;
+          }
+
+          if (nextGoldenH >= 0) {
+            int ghH12 = nextGoldenH % 12;
+            if (ghH12 == 0) ghH12 = 12;
+            const char* ghAmPm = nextGoldenH >= 12 ? "PM" : "AM";
+            snprintf(buf, sizeof(buf),
+              "Sunrise at %s, sunset at %s. "
+              "Astronomical dusk at %d:%02d %s. "
+              "Next golden hour %s at %d:%02d %s.",
+              getSunriseString(), getSunsetString(),
+              duskH12, st.sunsetAstronomicalMinute, duskAmPm,
+              nextGoldenType,
+              ghH12, nextGoldenM, ghAmPm);
+          } else {
+            snprintf(buf, sizeof(buf),
+              "Sunrise at %s, sunset at %s. "
+              "Astronomical dusk at %d:%02d %s.",
+              getSunriseString(), getSunsetString(),
+              duskH12, st.sunsetAstronomicalMinute, duskAmPm);
+          }
+        } else {
+          snprintf(buf, sizeof(buf), "Unable to calculate sun times for current location");
+        }
+        sayText(buf);
+      }
+      setSpeakerMute(false);
+      setAudioRoutingToRadio(false);
+      delay(1000);
+      pttOff();
+    } else if (detectedDTMF == 'B') {
+      // DTMF B - speak current date
+      displaySetState(DisplayState::TTS);
+      displaySetStateText("DATE");
+      displayShowState();
+      pttOn();
+      delay(600);
+      setAudioRoutingToRadio(true);
+      setSpeakerMute(true);
+      {
+        char dateBuf[64];
+        time_t now = time(nullptr);
+        struct tm* tm_info = localtime(&now);
+        strftime(dateBuf, sizeof(dateBuf), "Today is %A, %B %d, %Y", tm_info);
+        sayText(dateBuf);
+      }
+      setSpeakerMute(false);
+      setAudioRoutingToRadio(false);
+      delay(1000);
+      pttOff();
+    } else if (detectedDTMF == 'C') {
+      // DTMF C - speak current time
+      displaySetState(DisplayState::TTS);
+      displaySetStateText("TIME");
+      displayShowState();
+      pttOn();
+      delay(600);
+      setAudioRoutingToRadio(true);
+      setSpeakerMute(true);
+      {
+        char timeBuf[64];
+        time_t now = time(nullptr);
+        struct tm* tm_info = localtime(&now);
+        strftime(timeBuf, sizeof(timeBuf), "The current time is %I:%M %p", tm_info);
+        sayText(timeBuf);
+      }
+      setSpeakerMute(false);
+      setAudioRoutingToRadio(false);
+      delay(1000);
+      pttOff();
+    } else if (detectedDTMF == 'D') {
+      // DTMF D - reboot if enabled
+      if (dtmfARebootEnabled) {
+        displaySetStateText("REBOOT");
+        displayShowState();
+        delay(500);
+        ESP.restart();
+      } else {
+        displaySetState(DisplayState::TTS);
+        displaySetStateText("BATTERY");
+        displayShowState();
+        pttOn();
+        delay(600);
+        setAudioRoutingToRadio(true);
+        setSpeakerMute(true);
+        if (lastBatteryPct >= 0) {
+          String msg = "Battery is " + String(lastBatteryPct) + " percent";
+          if (extPowerConnected) {
+            msg += ", external power connected";
+            if (batteryCharging) msg += ", charging";
+          }
+          sayText(msg.c_str());
+        } else {
+          sayText("Battery status unavailable");
+        }
+        setSpeakerMute(false);
+        setAudioRoutingToRadio(false);
+        delay(1000);
+        pttOff();
+      }
     } else {
       // Normal parrot mode - save and playback
       int playedSlot = nextSlot;
@@ -393,6 +544,135 @@ void loop() {
       displaySetStateText(stateText);
       displayShowState();
       playSlot(detectedDTMF - '1');
+    } else if (detectedDTMF == 'A') {
+      // DTMF A - speak sunrise/sunset times
+      displaySetState(DisplayState::TTS);
+      displaySetStateText("SUN");
+      displayShowState();
+      pttOn();
+      delay(600);
+      setAudioRoutingToRadio(true);
+      setSpeakerMute(true);
+      {
+        time_t now = time(nullptr);
+        struct tm* t = localtime(&now);
+        SolarTimes st = calculateSunTimes(weatherLat, weatherLon, t->tm_year + 1900, t->tm_mon + 1, t->tm_mday);
+        char buf[512];
+        if (st.valid) {
+          int duskH12 = st.sunsetAstronomicalHour % 12;
+          if (duskH12 == 0) duskH12 = 12;
+          const char* duskAmPm = st.sunsetAstronomicalHour >= 12 ? "PM" : "AM";
+
+          int currentMins = t->tm_hour * 60 + t->tm_min;
+          int sunriseMins = st.sunriseHour * 60 + st.sunriseMinute;
+          int sunsetMins = st.sunsetHour * 60 + st.sunsetMinute;
+          const char* nextGoldenType = "";
+          int nextGoldenH = -1, nextGoldenM = -1;
+          if (currentMins < sunriseMins) {
+            nextGoldenType = "morning";
+            nextGoldenH = st.goldenHourMorningStartHour;
+            nextGoldenM = st.goldenHourMorningStartMinute;
+          } else if (currentMins < sunsetMins) {
+            nextGoldenType = "evening";
+            nextGoldenH = st.goldenHourEveningEndHour;
+            nextGoldenM = st.goldenHourEveningEndMinute;
+          }
+
+          if (nextGoldenH >= 0) {
+            int ghH12 = nextGoldenH % 12;
+            if (ghH12 == 0) ghH12 = 12;
+            const char* ghAmPm = nextGoldenH >= 12 ? "PM" : "AM";
+            snprintf(buf, sizeof(buf),
+              "Sunrise at %s, sunset at %s. "
+              "Astronomical dusk at %d:%02d %s. "
+              "Next golden hour %s at %d:%02d %s.",
+              getSunriseString(), getSunsetString(),
+              duskH12, st.sunsetAstronomicalMinute, duskAmPm,
+              nextGoldenType,
+              ghH12, nextGoldenM, ghAmPm);
+          } else {
+            snprintf(buf, sizeof(buf),
+              "Sunrise at %s, sunset at %s. "
+              "Astronomical dusk at %d:%02d %s.",
+              getSunriseString(), getSunsetString(),
+              duskH12, st.sunsetAstronomicalMinute, duskAmPm);
+          }
+        } else {
+          snprintf(buf, sizeof(buf), "Unable to calculate sun times for current location");
+        }
+        sayText(buf);
+      }
+      setSpeakerMute(false);
+      setAudioRoutingToRadio(false);
+      delay(1000);
+      pttOff();
+    } else if (detectedDTMF == 'B') {
+      displaySetState(DisplayState::TTS);
+      displaySetStateText("DATE");
+      displayShowState();
+      pttOn();
+      delay(600);
+      setAudioRoutingToRadio(true);
+      setSpeakerMute(true);
+      {
+        char dateBuf[64];
+        time_t now = time(nullptr);
+        struct tm* tm_info = localtime(&now);
+        strftime(dateBuf, sizeof(dateBuf), "Today is %A, %B %d, %Y", tm_info);
+        sayText(dateBuf);
+      }
+      setSpeakerMute(false);
+      setAudioRoutingToRadio(false);
+      delay(1000);
+      pttOff();
+    } else if (detectedDTMF == 'C') {
+      displaySetState(DisplayState::TTS);
+      displaySetStateText("TIME");
+      displayShowState();
+      pttOn();
+      delay(600);
+      setAudioRoutingToRadio(true);
+      setSpeakerMute(true);
+      {
+        char timeBuf[64];
+        time_t now = time(nullptr);
+        struct tm* tm_info = localtime(&now);
+        strftime(timeBuf, sizeof(timeBuf), "The current time is %I:%M %p", tm_info);
+        sayText(timeBuf);
+      }
+      setSpeakerMute(false);
+      setAudioRoutingToRadio(false);
+      delay(1000);
+      pttOff();
+    } else if (detectedDTMF == 'D') {
+      if (dtmfARebootEnabled) {
+        displaySetStateText("REBOOT");
+        displayShowState();
+        delay(500);
+        ESP.restart();
+      } else {
+        displaySetState(DisplayState::TTS);
+        displaySetStateText("BATTERY");
+        displayShowState();
+        pttOn();
+        delay(600);
+        setAudioRoutingToRadio(true);
+        setSpeakerMute(true);
+        if (lastBatteryPct >= 0) {
+          String msg = "Battery is " + String(lastBatteryPct) + " percent";
+          if (extPowerConnected) {
+            msg += ", external power connected";
+            if (batteryCharging) msg += ", charging";
+          }
+          sayText(msg.c_str());
+        } else {
+          sayText("Battery status unavailable");
+        }
+        setSpeakerMute(false);
+        setAudioRoutingToRadio(false);
+        delay(1000);
+        pttOff();
+      }
     } else {
       int playedSlot = nextSlot;
       saveToSlot(nextSlot);
@@ -480,5 +760,21 @@ void loop() {
       fetchWeatherReport();
       displaySetWeather(getWeatherDisplayString().c_str());
     }
+
+    // Update sun times if we have GPS or manual coordinates
+    if (weatherLat != 0 && weatherLon != 0) {
+      time_t now = time(nullptr);
+      struct tm* t = localtime(&now);
+      calculateSunTimes(weatherLat, weatherLon, t->tm_year + 1900, t->tm_mon + 1, t->tm_mday);
+    }
+
+    // Update local weather sensor reading
+    if (weatherSensorFound()) {
+      BME280Data data;
+      readWeatherSensor(&data);
+    }
+
+    // Update AXP2101 battery/power state
+    updatePowerState();
   }
 }

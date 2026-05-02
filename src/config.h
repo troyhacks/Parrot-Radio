@@ -25,6 +25,11 @@
 #define PMU_SCL 9
 #define PMU_IRQ 4
 
+// GPS module pins (T-TWR has GPS)
+#define GPS_TX 6    // ESP32 TX to GPS RX
+#define GPS_RX 5    // ESP32 RX from GPS TX
+#define GPS_PPS 7   // GPS Pulse Per Second (timing)
+
 // Note: T-TWR uses internal ADC for audio input, LEDC for audio output
 // I2S is not used for audio on T-TWR
 
@@ -136,6 +141,9 @@ extern int pinVBAT;
 // Testing mode
 extern bool testingMode;
 
+// DTMF A reboot setting
+extern bool dtmfARebootEnabled;
+
 // DTMF # message
 extern String dtmfHashMessage;
 
@@ -143,6 +151,7 @@ extern String dtmfHashMessage;
 extern String timezonePosix;
 extern bool rtcFound;
 extern bool ntpSynced;
+extern long gmtOffsetSeconds;  // UTC offset in seconds (e.g., -14400 for EDT = UTC-4)
 
 // Pre/post messages
 extern String preMessage;

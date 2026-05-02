@@ -118,20 +118,42 @@ void handleRoot() {
   html += "<label>Post-message (spoken after every transmission):</label>";
   html += "<textarea name='postmsg' rows='2' style='width:100%'>" + postMessage + "</textarea>";
   html += "<details><summary>Available macros</summary>";
-  html += "<code>{time}</code> 24h time, ";
-  html += "<code>{time12}</code> 12h time, ";
-  html += "<code>{date}</code> date, ";
+  html += "<strong>Time:</strong> ";
+  html += "<code>{time}</code> 24h, ";
+  html += "<code>{time12}</code> 12h, ";
+  html += "<code>{date}</code>, ";
   html += "<code>{day}</code> weekday, ";
-  html += "<code>{hour}</code> hour, ";
-  html += "<code>{minute}</code> minute, ";
-  html += "<code>{battery}</code> battery %, ";
-  html += "<code>{voltage}</code> battery volts, ";
-  html += "<code>{slot}</code> next slot #, ";
-  html += "<code>{slots_used}</code> used slots, ";
-  html += "<code>{slots_total}</code> total slots, ";
+  html += "<code>{hour}</code>, ";
+  html += "<code>{minute}</code>, ";
+  html += "<code>{timezone}</code><br>";
+  html += "<strong>Battery:</strong> ";
+  html += "<code>{battery}</code> %, ";
+  html += "<code>{voltage}</code> V<br>";
+  html += "<strong>Radio:</strong> ";
   html += "<code>{freq}</code> frequency, ";
-  html += "<code>{uptime}</code> uptime, ";
-  html += "<code>{ip}</code> IP address";
+  html += "<code>{slot}</code> next slot, ";
+  html += "<code>{slots_used}</code>/<code>{slots_total}</code> slots<br>";
+  html += "<strong>System:</strong> ";
+  html += "<code>{uptime}</code>, ";
+  html += "<code>{ip}</code> IP address<br>";
+  html += "<strong>Local sensor:</strong> ";
+  html += "<code>{localtemp}</code>, ";
+  html += "<code>{localhumidity}</code>, ";
+  html += "<code>{localpressure}</code><br>";
+  html += "<strong>GPS:</strong> ";
+  html += "<code>{gps_lat}</code>, ";
+  html += "<code>{gps_lon}</code><br>";
+  html += "<strong>Sun:</strong> ";
+  html += "<code>{sunrise}</code>, ";
+  html += "<code>{sunset}</code>, ";
+  html += "<code>{civil_dawn}</code>, ";
+  html += "<code>{civil_dusk}</code>, ";
+  html += "<code>{nautical_dawn}</code>, ";
+  html += "<code>{nautical_dusk}</code>, ";
+  html += "<code>{astronomical_dawn}</code>, ";
+  html += "<code>{astronomical_dusk}</code>, ";
+  html += "<code>{golden_hour_morning}</code>, ";
+  html += "<code>{golden_hour_evening}</code>";
   html += "</details>";
 
   // DTMF # message
@@ -153,6 +175,8 @@ void handleRoot() {
   // Testing mode
   html += "<h2>Mode</h2>";
   html += "<label><input type='checkbox' name='testmode' value='1'" + String(testingMode ? " checked" : "") + "> Testing Mode (PTT disabled)</label>";
+  html += "<br>";
+  html += "<label><input type='checkbox' name='dtmfareboot' value='1'" + String(dtmfARebootEnabled ? " checked" : "") + "> DTMF A triggers instant reboot</label>";
 
   html += "<br><br><input type='submit' value='Save & Reboot'>";
   html += "</form>";
@@ -244,6 +268,7 @@ void handleSave() {
   String newToneVol = server.arg("tonevol");
   String newPlayVol = server.arg("playvol");
   bool newTestMode = server.hasArg("testmode");
+  bool newDtmfAReboot = server.hasArg("dtmfareboot");
 
   preferences.begin("parrot", false);
 
@@ -293,6 +318,7 @@ void handleSave() {
     preferences.putInt("playvol", constrain(newPlayVol.toInt(), 0, 200));
   }
   preferences.putBool("testmode", newTestMode);
+  preferences.putBool("dtmfareboot", newDtmfAReboot);
   preferences.putString("hashmsg", server.arg("hashmsg"));
   preferences.putString("premsg", server.arg("premsg"));
   preferences.putString("postmsg", server.arg("postmsg"));
@@ -490,6 +516,7 @@ void initWiFi() {
 
   // Testing mode (default ON for safety)
   testingMode = preferences.getBool("testmode", true);
+  dtmfARebootEnabled = preferences.getBool("dtmfareboot", true);
   dtmfHashMessage = preferences.getString("hashmsg", "");
   preMessage = preferences.getString("premsg", "");
   postMessage = preferences.getString("postmsg", "");

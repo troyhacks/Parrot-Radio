@@ -3,6 +3,7 @@
 #include <Wire.h>
 #include <sys/time.h>
 #include <WiFi.h>
+#include "gps.h"
 
 #ifndef BOARD_TTWR
 // BCD conversion helpers
@@ -89,9 +90,58 @@ void syncNTP() {
   time(&beforeSync);
 
   Serial.println("Starting NTP sync...");
+  // configTime sets GMT offset — when offset=0, getLocalTime uses TZ variable for conversion
+  // After configTime, re-apply TZ so it isn't overridden
   configTime(0, 0, "pool.ntp.org", "time.nist.gov");
-  // Re-apply timezone — configTime can reset TZ internally
   applyTimezone();
+
+  // Compute and cache the UTC offset while TZ is correctly set.
+  // gmtime_r sets tm_isdst=0 which would make mktime use standard time (EST = UTC-5),
+  // even when DST is active (EDT = UTC-4). We use localtime_r to get the correct
+  // DST flag for the current date, then pass it to mktime for the EST5EDT timezone.
+  const char* oldTz = getenv("TZ");
+  char tzCopy[64] = {0};
+  if (oldTz != nullptr && oldTz[0] != '\0') {
+    strncpy(tzCopy, oldTz, sizeof(tzCopy) - 1);
+  }
+  struct tm nowTm;
+  time_t now = time(nullptr);
+  gmtime_r(&now, &nowTm);
+
+  // Get UTC epoch with TZ=UTC0 (mktime interprets tm as UTC)
+  setenv("TZ", "UTC0", 1);
+  tzset();
+  time_t utcEpoch = mktime(&nowTm);
+
+  // Get DST flag for this date using localtime_r with the real TZ
+  if (tzCopy[0] != '\0') {
+    setenv("TZ", tzCopy, 1);
+  } else {
+    setenv("TZ", "UTC0", 1);
+  }
+  tzset();
+  struct tm tmp;
+  localtime_r(&utcEpoch, &tmp);
+  int dstFlag = tmp.tm_isdst;  // 1 if DST active, 0 if not
+
+  // Now compute local epoch with TZ=EST5EDT and correct DST flag
+  setenv("TZ", "UTC0", 1);
+  tzset();
+  nowTm.tm_isdst = dstFlag;
+  time_t utcEpochCheck = mktime(&nowTm);  // same UTC epoch
+
+  if (tzCopy[0] != '\0') {
+    setenv("TZ", tzCopy, 1);
+  } else {
+    setenv("TZ", "UTC0", 1);
+  }
+  tzset();
+  nowTm.tm_isdst = dstFlag;
+  time_t localEpoch = mktime(&nowTm);
+
+  gmtOffsetSeconds = (long)(localEpoch - utcEpochCheck);
+  Serial.printf("UTC offset computed: %+ld seconds (%+ld hours), DST=%d\n", gmtOffsetSeconds, gmtOffsetSeconds / 3600, dstFlag);
+
   struct tm t;
   int attempts = 0;
   while (!getLocalTime(&t, 100) && attempts < 50) {
@@ -102,15 +152,19 @@ void syncNTP() {
     time_t afterSync;
     time(&afterSync);
 
-    char buf[32];
-    strftime(buf, sizeof(buf), "%Y-%m-%d %H:%M:%S", &t);
-    Serial.printf("NTP synced: %s (local)\n", buf);
+    char utcBuf[32];
+    strftime(utcBuf, sizeof(utcBuf), "%Y-%m-%d %H:%M:%S UTC", gmtime(&afterSync));
+    char localBuf[32];
+    strftime(localBuf, sizeof(localBuf), "%Y-%m-%d %H:%M:%S local", &t);
+    Serial.printf("NTP synced: %s | UTC: %s\n", localBuf, utcBuf);
 
     // Calculate and print drift
-    long drift = (long)(afterSync - beforeSync);
-    if (beforeSync > 1000000000) {  // Only if RTC had valid time
+#ifndef BOARD_TTWR
+    if (rtcFound && beforeSync > 1000000000) {
+      long drift = (long)(afterSync - beforeSync);
       Serial.printf("RTC was %+ld seconds off from NTP\n", drift);
     }
+#endif
 
 #ifndef BOARD_TTWR
     if (rtcFound) {
@@ -124,5 +178,7 @@ void syncNTP() {
 #endif
   } else {
     Serial.println("NTP sync failed (timeout)");
+    // Try GPS as fallback
+    syncRTCFromGPS();
   }
 }

@@ -23,6 +23,7 @@ static int16_t dig_P8;
 static int16_t dig_P9;
 
 static bool sensorFound = false;
+BME280Data localWeather = {0, 0, 0, false};
 
 bool weatherSensorFound() {
   return sensorFound;
@@ -194,4 +195,7 @@ void readWeatherSensor(BME280Data* data) {
   data->pressure = (float)compensatePressure(adc_P, t_fine) / 256.0f;
   data->humidity = 0;  // BMP280 has no humidity sensor
   data->valid = true;
+
+  // Also update global localWeather for macro access
+  localWeather = *data;
 }

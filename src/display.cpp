@@ -19,6 +19,7 @@ static char currentDtmf = 0;
 // Stored IP/time
 static char lastIp[32] = "";
 static char lastTime[32] = "";
+static char currentGPS[16] = "";  // GPS status on right side of header
 
 // Weather line (always shown at bottom)
 static char weatherLine[32] = "Fetching weather...";
@@ -29,6 +30,7 @@ static bool dirtyState = false;
 static bool dirtyInfo = false;
 static bool dirtyWeather = false;
 static bool dirtyAction = false;
+static bool dirtyGPS = false;
 
 // Display regions
 #define REGION_HEADER_Y 0
@@ -165,6 +167,12 @@ void displayUpdate() {
     u8g2.updateDisplayArea(0, REGION_HEADER_Y, 128, REGION_HEADER_H);
     dirtyHeader = false;
   }
+  if (dirtyGPS) {
+    u8g2.setFont(u8g2_font_5x8_tr);
+    u8g2.drawStr(75, 40, currentGPS);
+    u8g2.updateDisplayArea(0, REGION_INFO_Y, 128, REGION_INFO_H);
+    dirtyGPS = false;
+  }
   if (dirtyState) {
     u8g2.setFont(u8g2_font_ncenB14_tr);
     const char* stateText = customStateText[0] ? customStateText : stateToString(currentState);
@@ -184,6 +192,10 @@ void displayUpdate() {
       }
       if (currentCTCSS[0]) {
         u8g2.drawStr(0, 48, currentCTCSS);
+      }
+      // GPS status on right side of channel line
+      if (currentGPS[0]) {
+        u8g2.drawStr(75, 40, currentGPS);
       }
     }
     u8g2.updateDisplayArea(0, REGION_INFO_Y, 128, REGION_INFO_H);
@@ -315,6 +327,21 @@ void displaySetWeather(const char* weather) {
   }
 }
 
+void displaySetGPS(const char* gps) {
+  if (gps == NULL) {
+    if (currentGPS[0] != '\0') {
+      currentGPS[0] = '\0';
+      dirtyGPS = true;
+      displayUpdate();
+    }
+  } else if (strncmp(currentGPS, gps, sizeof(currentGPS)) != 0) {
+    strncpy(currentGPS, gps, sizeof(currentGPS) - 1);
+    currentGPS[sizeof(currentGPS) - 1] = '\0';
+    dirtyGPS = true;
+    displayUpdate();
+  }
+}
+
 // Full redraw for initial display
 void displayShowFull(const char* ip, const char* time) {
   if (ip) {
@@ -345,6 +372,9 @@ void displayShowFull(const char* ip, const char* time) {
     }
     if (currentCTCSS[0]) {
       u8g2.drawStr(0, 48, currentCTCSS);
+    }
+    if (currentGPS[0]) {
+      u8g2.drawStr(75, 40, currentGPS);
     }
   }
   u8g2.drawStr(0, 61, weatherLine);
