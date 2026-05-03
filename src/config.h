@@ -112,6 +112,11 @@ extern String wifiPassword;
 extern float weatherLat;
 extern float weatherLon;
 
+// GPS behavior preferences
+extern bool gpsWeatherEnabled;    // Use GPS coordinates for weather
+extern bool gpsTimeEnabled;        // Sync time from GPS
+extern bool gpsTimezoneEnabled;   // Auto-detect timezone from GPS coordinates
+
 // Radio settings
 extern String radioFreq;
 extern String radioTxCTCSS;

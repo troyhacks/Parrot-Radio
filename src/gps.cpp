@@ -95,15 +95,15 @@ static bool parseGPRMC(const char* sentence) {
     return false;
   }
 
-  // Time (field 1)
+  // Time (field 1) - hhmmss format
   token = strtok(NULL, ",");
   if (!token || strlen(token) < 6) return false;
-  int hour = atoi(token);
-  int minute = atoi(token + 2);
-  int second = atoi(token + 4);
-  gpsData.hour = hour;
-  gpsData.minute = minute;
-  gpsData.second = second;
+  char hourStr[3] = {token[0], token[1], '\0'};
+  char minStr[3] = {token[2], token[3], '\0'};
+  char secStr[3] = {token[4], token[5], '\0'};
+  gpsData.hour = atoi(hourStr);
+  gpsData.minute = atoi(minStr);
+  gpsData.second = atoi(secStr);
 
   // Status (field 2) - A=active/valid, V=void/invalid
   token = strtok(NULL, ",");
@@ -150,9 +150,12 @@ static bool parseGPRMC(const char* sentence) {
   // Date (field 9) - ddmmyy format
   token = strtok(NULL, ",");
   if (token && strlen(token) >= 6) {
-    gpsData.day = atoi(token);
-    gpsData.month = atoi(token + 2);
-    gpsData.year = 2000 + atoi(token + 4);
+    char dayStr[3] = {token[0], token[1], '\0'};
+    char monStr[3] = {token[2], token[3], '\0'};
+    char yrStr[3] = {token[4], token[5], '\0'};
+    gpsData.day = atoi(dayStr);
+    gpsData.month = atoi(monStr);
+    gpsData.year = 2000 + atoi(yrStr);
   }
 
   gpsData.valid = true;
@@ -267,6 +270,10 @@ void syncRTCFromGPS() {
     Serial.println("GPS: no fix, cannot sync time");
     return;
   }
+  if (!gpsTimeEnabled) {
+    Serial.println("GPS: time sync disabled in preferences");
+    return;
+  }
 
   // GPS gives us UTC time - convert to epoch
   struct tm t;
@@ -288,6 +295,10 @@ void syncRTCFromGPS() {
   // Set system time
   struct timeval tv = { .tv_sec = epoch, .tv_usec = 0 };
   settimeofday(&tv, NULL);
+
+  // Initialize ESP32 timekeeping (needed for getLocalTime to work)
+  // Pass 0 for gmtOffset and dstOffset since we use TZ variable
+  configTime(0, 0, NULL, NULL);
 
   char buf[32];
   strftime(buf, sizeof(buf), "%Y-%m-%d %H:%M:%S UTC", &t);
@@ -311,6 +322,10 @@ void applyTimezoneFromGPS() {
   // Set timezone from GPS coordinates (called after NTP sync if timezone not configured)
   if (!gpsData.valid) {
     Serial.println("GPS: no fix, cannot set timezone from coordinates");
+    return;
+  }
+  if (!gpsTimezoneEnabled) {
+    Serial.println("GPS: timezone auto-detect disabled in preferences");
     return;
   }
   const char* tz = getTimezoneForCoords(gpsData.latitude, gpsData.longitude);

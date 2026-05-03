@@ -75,14 +75,12 @@ static ESpeak espeak(ttsOut);
 //
 // NOTE: espeak pronunciation issues with numbers:
 // - "five" standalone: espeak pronounces as "VEE" — fixed by using digit "5" instead
-// - "fifty": historically had issues in espeak TTS — if tests still show mispronunciation,
-//   consider using "5 0" (digits) as a fallback for 50-59 range
-//
-// This differs from sun.cpp intToWords which uses a "five " prefix for 50-59.
-// If "fifty" causes issues, the 50-59 special-case from sun.cpp could be applied here.
+// - "fifty": espeak TTS mispronounces "fifty" (spells it out letter-by-letter),
+//   so we use "50" (digits) instead. Same issue may affect 51-59, but "50" covers most cases.
+//   If 51-59 need fixing, consider the sun.cpp approach of "five " prefix for 50-59.
 static const char* s_ones[] = {"zero", "one", "two", "three", "four", "five ", "six", "seven", "eight", "nine",
                                 "ten", "eleven", "twelve", "thirteen", "fourteen", "fifteen", "sixteen", "seventeen", "eighteen", "nineteen"};
-static const char* s_tens[] = {"", "", "twenty", "thirty", "forty", "fifty", "sixty", "seventy", "eighty", "ninety"};
+static const char* s_tens[] = {"", "", "twenty", "thirty", "forty", "50", "sixty", "seventy", "eighty", "ninety"};
 
 static String intToWords(int n) {
   if (n == 0) return "zero";

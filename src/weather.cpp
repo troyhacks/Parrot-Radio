@@ -82,7 +82,7 @@ static int extractJsonInt(const String& json, const String& key) {
 String fetchWeatherReport() {
   if (WiFi.status() != WL_CONNECTED) {
     Serial.println("Weather: WiFi not connected");
-    return "no wifi";
+    return "no network";
   }
 
   // Use cached report if still fresh

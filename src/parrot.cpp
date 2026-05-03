@@ -28,6 +28,11 @@ String wifiPassword;
 float weatherLat;
 float weatherLon;
 
+// GPS behavior preferences
+bool gpsWeatherEnabled = true;    // Use GPS coordinates for weather
+bool gpsTimeEnabled = true;        // Sync time from GPS
+bool gpsTimezoneEnabled = true;   // Auto-detect timezone from GPS coordinates
+
 // Radio settings
 String radioFreq;
 String radioTxCTCSS;
@@ -286,6 +291,29 @@ void loop() {
   // Update GPS data
   updateGPS();
   displaySetGPS(gpsHasFix() ? "GPS OK" : "GPS ..");
+
+  // In AP mode (bad WiFi), sync time from GPS when it gets a fix
+  // This is needed because syncNTP() is skipped in AP mode
+  static bool gpsTimeSynced = false;
+  if (apMode && !gpsTimeSynced && gpsHasFix() && gpsTimeEnabled) {
+    syncRTCFromGPS();
+    gpsTimeSynced = true;
+  }
+
+  // Apply timezone from GPS if enabled (only once)
+  static bool gpsTzApplied = false;
+  if (gpsTimezoneEnabled && !gpsTzApplied && gpsHasFix()) {
+    applyTimezoneFromGPS();
+    gpsTzApplied = true;
+  }
+
+  // Update weather/sun coordinates from GPS if enabled (only once)
+  static bool gpsCoordsApplied = false;
+  if (gpsWeatherEnabled && !gpsCoordsApplied && gpsHasFix()) {
+    weatherLat = gpsData.latitude;
+    weatherLon = gpsData.longitude;
+    gpsCoordsApplied = true;
+  }
 
   static bool wasReceiving = false;
   static unsigned long recordStartTime = 0;

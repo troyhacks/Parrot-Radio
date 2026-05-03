@@ -699,8 +699,9 @@ int getRSSI() {
 }
 
 bool isReceiving() {
-  // Ignore squelch pin in AP mode or while WiFi is settling (RF noise causes false triggers)
-  if (apMode || millis() < wifiReadyTime) return false;
+  // Ignore squelch pin while WiFi is settling (RF noise during startup causes false triggers)
+  // Note: AP mode does NOT ignore squelch - external radio signals should still be detected
+  if (millis() < wifiReadyTime) return false;
 
   // Audio ON pin goes LOW when receiving
   bool squelchLow = (digitalRead(pinAudioOn) == LOW);

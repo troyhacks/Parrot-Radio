@@ -82,7 +82,8 @@ void handleRoot() {
   html += ".connected{background:#d4edda;}.disconnected{background:#f8d7da;}";
   html += ".btn{background:#007bff;color:white;border:none;padding:10px;cursor:pointer;margin:5px 0;}";
   html += ".coords{display:flex;gap:10px;}.coords input{width:48%;}";
-  html += ".checkbox-item{display:flex;align-items:center;gap:8px;margin:5px 0;}.checkbox-item input{width:auto;margin:0;}</style></head>";
+  html += ".checkbox-item{display:flex;align-items:center;gap:8px;margin:5px 0;}.checkbox-item input{width:auto;margin:0;}";
+  html += ".note{font-size:12px;color:#666;margin:5px 0;}</style></head>";
   html += "<body><h1>Radio Parrot</h1>";
 
   // Status
@@ -104,6 +105,19 @@ void handleRoot() {
   html += "</div>";
   html += "<button type='button' class='btn' onclick='detectLocation()'>Detect My Location</button>";
   html += "<div id='locStatus'></div>";
+
+  // GPS Behavior (BETA)
+  html += "<h2>GPS Behavior (BETA)</h2>";
+  html += "<div class='checkbox-item'><input name='gpsweather' type='checkbox' value='1'";
+  html += gpsWeatherEnabled ? " checked" : "";
+  html += "><label>Use GPS coordinates for weather</label></div>";
+  html += "<div class='checkbox-item'><input name='gpstime' type='checkbox' value='1'";
+  html += gpsTimeEnabled ? " checked" : "";
+  html += "><label>Sync time from GPS</label></div>";
+  html += "<div class='checkbox-item'><input name='gpstz' type='checkbox' value='1'";
+  html += gpsTimezoneEnabled ? " checked" : "";
+  html += "><label>Auto-detect timezone from GPS</label></div>";
+  html += "<p class='note'>These features use GPS to set location, time, and timezone automatically.</p>";
 
   // Radio settings
   html += "<h2>Radio Settings</h2>";
@@ -297,6 +311,9 @@ void handleSave() {
   String newTestVol = server.arg("testvol");
   bool newTestMode = server.hasArg("testmode");
   bool newDtmfAReboot = server.hasArg("dtmfareboot");
+  bool newGpsWeather = server.hasArg("gpsweather");
+  bool newGpsTime = server.hasArg("gpstime");
+  bool newGpsTz = server.hasArg("gpstz");
 
   preferences.begin("parrot", false);
 
@@ -312,6 +329,9 @@ void handleSave() {
   if (newLon.length() > 0) {
     preferences.putFloat("lon", newLon.toFloat());
   }
+  preferences.putBool("gpsweather", newGpsWeather);
+  preferences.putBool("gpstime", newGpsTime);
+  preferences.putBool("gpstz", newGpsTz);
   if (newFreq.length() > 0) {
     preferences.putString("freq", newFreq);
   }
@@ -510,6 +530,9 @@ void initWiFi() {
   wifiPassword = preferences.getString("password", "");
   weatherLat = preferences.getFloat("lat", DEFAULT_LAT);
   weatherLon = preferences.getFloat("lon", DEFAULT_LON);
+  gpsWeatherEnabled = preferences.getBool("gpsweather", true);
+  gpsTimeEnabled = preferences.getBool("gpstime", true);
+  gpsTimezoneEnabled = preferences.getBool("gpstz", true);
   radioFreq = preferences.getString("freq", "451.0000");
   radioTxCTCSS = preferences.getString("txctcss", "0000");
   radioRxCTCSS = preferences.getString("rxctcss", "0000");
