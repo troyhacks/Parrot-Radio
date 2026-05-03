@@ -177,8 +177,8 @@ void playRadioTest() {
   pttOn();
   delay(900);
 
-  Serial.printf("Playing radio test audio (%d samples, %.1f sec)\n",
-                RADIO_TEST_SAMPLES, (float)RADIO_TEST_SAMPLES / RADIO_TEST_SAMPLE_RATE);
+  Serial.printf("Playing radio test audio (%d samples, %.1f sec) at %d%% volume\n",
+                RADIO_TEST_SAMPLES, (float)RADIO_TEST_SAMPLES / RADIO_TEST_SAMPLE_RATE, radioTestVolumePercent);
 
   setAudioRoutingToRadio(true);
 
@@ -186,9 +186,9 @@ void playRadioTest() {
   int16_t buffer[256];
   for (int i = 0; i < RADIO_TEST_SAMPLES; i += 256) {
     int chunkSize = min(256, RADIO_TEST_SAMPLES - i);
-    // Copy from PROGMEM to RAM buffer
+    // Copy from PROGMEM to RAM buffer with volume scaling
     for (int j = 0; j < chunkSize; j++) {
-      buffer[j] = pgm_read_word(&radioTestAudio[i + j]);
+      buffer[j] = (pgm_read_word(&radioTestAudio[i + j]) * radioTestVolumePercent) / 100;
     }
     audioWrite(buffer, chunkSize);
   }
@@ -329,14 +329,14 @@ static uint16_t adcCenter = 2048;  // Default; real value calibrated in initAudi
 // Adaptive DC estimate (reset at start of each recording)
 float dcEstimate = 2048.0f;
 
-// Counter for consecutive squelch-HIGH readings to detect end of transmission
-static int squelchHighCount = 0;
 // DTMF check counter - samples accumulated since last DTMF check
 static int dtmfCheckCounter = 0;
 // Timestamp when current transmission started (to ignore brief squelch at start)
 static unsigned long transmissionStartTime = 0;
 // Timestamp when recording began (to compute actual vs recorded duration)
 static unsigned long recordingStartTime = 0;
+// Timestamp of last squelch LOW (for debounce timing)
+static unsigned long lastSquelchLowTime = 0;
 static void IRAM_ATTR audioTimerISR() {
   if (audioRingWriteIdx != audioRingReadIdx) {
     AudioRingEntry entry = audioRingBuf[audioRingReadIdx];
@@ -361,7 +361,7 @@ void audioWrite(int16_t* data, size_t samples, uint16_t ticksPerSample) {
   for (size_t i = 0; i < samples; i++) {
     uint16_t next = (audioRingWriteIdx + 1) % AUDIO_RING_BUF_SIZE;
     while (next == audioRingReadIdx) {
-      delayMicroseconds(10);
+      vTaskDelay(pdMS_TO_TICKS(1)); // Let FreeRTOS breathe instead of busy-waiting
     }
     audioRingBuf[audioRingWriteIdx] = (AudioRingEntry){data[i], ticksPerSample};
     audioRingWriteIdx = next;
@@ -398,7 +398,7 @@ void drainAudio() {
   // At 22050 Hz, a 1024-sample buffer drains in ~46 ms
   uint32_t deadline = xTaskGetTickCount() + 100 / portTICK_PERIOD_MS;
   while (audioRingWriteIdx != audioRingReadIdx && xTaskGetTickCount() < deadline) {
-    ets_delay_us(100);
+    vTaskDelay(1); // Non-blocking yield
   }
 }
 
@@ -641,7 +641,9 @@ void initializeSA868() {
   }
 
   // Set frequency from stored settings (simplex mode: TX=RX)
-  String cmd = "AT+DMOSETGROUP=0," + radioFreq + "," + radioFreq + "," + radioTxCTCSS + "," + String(radioSquelch) + "," + radioRxCTCSS;
+  // AT+DMOSETGROUP=0,<freq_tx>,<freq_rx>,<tx_ctcss>,<rx_ctcss>,<bandwidth>
+  // bandwidth: 0=12.5kHz, 1=25kHz
+  String cmd = "AT+DMOSETGROUP=0," + radioFreq + "," + radioFreq + "," + radioTxCTCSS + "," + String(radioSquelch) + "," + radioRxCTCSS + "," + String(radioBandwidth25);  // 1 = 25kHz, 0 = 12.5kHz
   Serial.printf("Radio config: %s\n", cmd.c_str());
   SA868.println(cmd);
   delay(500);
@@ -703,7 +705,7 @@ bool isReceiving() {
   bool squelchLow = (digitalRead(pinAudioOn) == LOW);
 
   if (squelchLow) {
-    squelchHighCount = 0;  // Reset counter on any LOW
+    lastSquelchLowTime = millis();
     // Mark when a new transmission starts
     if (!recording) {
       transmissionStartTime = millis();
@@ -711,22 +713,13 @@ bool isReceiving() {
     return true;
   }
 
-  // Squelch HIGH: only count if transmission has been active for >200ms
-  // This prevents squelch flutter at the start of a transmission from ending it early
-  unsigned long elapsed = millis() - transmissionStartTime;
-  if (elapsed > 200) {
-    squelchHighCount++;
-    // After 5+ consecutive HIGH readings (500ms), transmission ended
-    if (squelchHighCount >= 5) {
-      squelchHighCount = 0;
-      return false;
-    }
+  // Squelch HIGH: wait 500ms before declaring transmission over
+  if (millis() - lastSquelchLowTime > 500) {
+    return false;
   }
 
-  // If we're in a recording and squelch is briefly high but < 1 sec since start, keep recording
-  if (recording) return true;
-
-  return false;
+  // Keep alive during recording or brief squelch drops
+  return true;
 }
 
 void startRecording() {
@@ -739,7 +732,7 @@ void startRecording() {
   detectedDTMF = 0;  // Reset DTMF detection
   dtmfCheckCounter = 0;  // Reset DTMF check counter
   lastKnownRSSI = 0;  // Reset RSSI cache at start of new recording
-  squelchHighCount = 0;  // Reset squelch counter
+  // squelchHighCount removed - replaced with lastSquelchLowTime
   transmissionStartTime = 0;  // Will be set when squelch next goes LOW
 
 #ifdef BOARD_TTWR
@@ -900,6 +893,12 @@ void playbackWithFeedback() {
 
   speakPreMessage();
 
+  // Wait for pre-message TTS to finish playing before starting recorded audio
+  // This ensures TTS and recorded audio don't interleave in the ring buffer
+  drainAudio();
+  waitForTTSDone();
+  drainAudio();
+
   // Play back recorded audio with volume applied (at the rate it was recorded)
   Serial.printf("playbackWithFeedback: playbackVolumePercent=%d, recordIndex=%d, ticks=%d\n",
                 playbackVolumePercent, recordIndex, adcTicksPerSample);
@@ -941,6 +940,16 @@ void playbackWithFeedback() {
   generateQualityFeedback();
 
   speakPostMessage();
+
+  // Wait for ALL TTS to complete before PTT off
+  // First wait: for generateQualityFeedback TTS (e.g., "good signal")
+  drainAudio();
+  waitForTTSDone();
+  // Second wait: for speakPostMessage TTS (e.g., "thank you, good bye!")
+  drainAudio();
+  waitForTTSDone();
+  // Final drain: ensure ring buffer is empty before PTT off
+  drainAudio();
 
 #ifdef BOARD_TTWR
   // Unmute speaker first (before switching routing)

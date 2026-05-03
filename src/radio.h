@@ -40,6 +40,9 @@ bool isReceiving();
 void pttOn();
 void pttOff();
 
+// Audio drain - wait for ring buffer to empty
+void drainAudio();
+
 // Recording functions
 void startRecording();
 void stopRecording();

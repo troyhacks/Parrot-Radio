@@ -41,5 +41,15 @@ const char* getSunriseString();
 // Get sunset time as a string (e.g., "8:30 PM")
 const char* getSunsetString();
 
+// Get sunrise time as words for TTS (e.g., "six oh seven AM")
+String getSunriseWords();
+
+// Get sunset time as words for TTS (e.g., "eight twenty one PM")
+String getSunsetWords();
+
 // Check if current time is between sunrise and sunset
 bool isDaytime();
+
+// Get next golden hour as words (e.g., "morning golden hour at six thirty PM")
+// Returns empty string if no golden hour found today
+String getNextGoldenHourWords();

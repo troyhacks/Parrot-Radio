@@ -61,8 +61,20 @@ static String ctcssDropdown(const char* name, const String& currentCode) {
   return html;
 }
 
+// Escape HTML special characters to prevent XSS
+static String escapeHTML(const String& unescaped) {
+  String escaped = unescaped;
+  escaped.replace("&", "&amp;");
+  escaped.replace("<", "&lt;");
+  escaped.replace(">", "&gt;");
+  escaped.replace("\"", "&quot;");
+  escaped.replace("'", "&#39;");
+  return escaped;
+}
+
 void handleRoot() {
   String html = "<!DOCTYPE html><html><head><title>Radio Parrot</title>";
+  html.reserve(8192); // Prevent heap fragmentation
   html += "<meta name='viewport' content='width=device-width, initial-scale=1'>";
   html += "<style>body{font-family:sans-serif;margin:20px;max-width:400px;}";
   html += "input,select{margin:5px 0;padding:8px;width:100%;box-sizing:border-box;}";
@@ -74,13 +86,13 @@ void handleRoot() {
 
   // Status
   html += "<div class='status ";
-  html += (WiFi.status() == WL_CONNECTED) ? "connected'>Connected to: " + wifiSSID : "disconnected'>Not connected (AP Mode)";
+  html += (WiFi.status() == WL_CONNECTED) ? "connected'>Connected to: " + escapeHTML(wifiSSID) : "disconnected'>Not connected (AP Mode)";
   html += "</div>";
 
   // WiFi form
   html += "<h2>WiFi Settings</h2>";
   html += "<form action='/save' method='POST'>";
-  html += "<label>SSID:</label><input name='ssid' value='" + wifiSSID + "'>";
+  html += "<label>SSID:</label><input name='ssid' value='" + escapeHTML(wifiSSID) + "'>";
   html += "<label>Password:</label><input name='pass' type='password' placeholder='Enter new password'>";
 
   // Weather location
@@ -94,29 +106,39 @@ void handleRoot() {
 
   // Radio settings
   html += "<h2>Radio Settings</h2>";
-  html += "<label>Frequency (MHz):</label><input name='freq' value='" + radioFreq + "' placeholder='451.0000'>";
+  html += "<label>Frequency (MHz):</label><input name='freq' value='" + escapeHTML(radioFreq) + "' placeholder='451.0000'>";
   html += "<label>TX CTCSS:</label>";
   html += ctcssDropdown("txctcss", radioTxCTCSS);
   html += "<label>RX CTCSS:</label>";
   html += ctcssDropdown("rxctcss", radioRxCTCSS);
   html += "<label>Squelch (0-8):</label><input name='squelch' type='number' min='0' max='8' value='" + String(radioSquelch) + "'>";
   html += "<label>SA868 Volume (0-8):</label><input name='radiovol' type='number' min='0' max='8' value='" + String(radioVolume) + "'>";
-  html += "<label>SA868 Filter: Bandpass:</label><input name='filterbp' type='number' min='0' max='1' value='" + String(radioFilterBP) + "'>";
-  html += "<label>SA868 Filter: De-noise:</label><input name='filterden' type='number' min='0' max='1' value='" + String(radioFilterDENoise) + "'>";
-  html += "<label>SA868 Filter: De-emphasis:</label><input name='filterder' type='number' min='0' max='1' value='" + String(radioFilterDER) + "'>";
+  html += "<label>SA868 Filter: Bandpass</label><input name='filterbp' type='checkbox' value='1'";
+  html += radioFilterBP ? " checked" : "";
+  html += ">";
+  html += "<label>SA868 Filter: De-noise</label><input name='filterden' type='checkbox' value='1'";
+  html += radioFilterDENoise ? " checked" : "";
+  html += ">";
+  html += "<label>SA868 Filter: De-emphasis</label><input name='filterder' type='checkbox' value='1'";
+  html += radioFilterDER ? " checked" : "";
+  html += ">";
+  html += "<label>25 kHz Channel Width (uncheck for 12.5 kHz)</label><input name='bandwidth25' type='checkbox' value='1'";
+  html += radioBandwidth25 ? " checked" : "";
+  html += ">";
 
   // Audio settings
   html += "<h2>Audio Settings</h2>";
   html += "<label>Voice Volume (0-100%):</label><input name='samvol' type='number' min='0' max='100' value='" + String(samVolumePercent) + "'>";
   html += "<label>Tone Volume (0-100%):</label><input name='tonevol' type='number' min='0' max='100' value='" + String(toneVolumePercent) + "'>";
   html += "<label>Recorded Playback Volume (0-200%):</label><input name='playvol' type='number' min='0' max='200' value='" + String(playbackVolumePercent) + "'>";
+  html += "<label>Radio Test Volume (0-100%):</label><input name='testvol' type='number' min='0' max='100' value='" + String(radioTestVolumePercent) + "'>";
 
   // Pre/post messages
   html += "<h2>Message Wrapping</h2>";
   html += "<label>Pre-message (spoken before every transmission):</label>";
-  html += "<textarea name='premsg' rows='2' style='width:100%'>" + preMessage + "</textarea>";
+  html += "<textarea name='premsg' rows='2' style='width:100%'>" + escapeHTML(preMessage) + "</textarea>";
   html += "<label>Post-message (spoken after every transmission):</label>";
-  html += "<textarea name='postmsg' rows='2' style='width:100%'>" + postMessage + "</textarea>";
+  html += "<textarea name='postmsg' rows='2' style='width:100%'>" + escapeHTML(postMessage) + "</textarea>";
   html += "<details><summary>Available macros</summary>";
   html += "<strong>Time:</strong> ";
   html += "<code>{time}</code> 24h, ";
@@ -153,19 +175,20 @@ void handleRoot() {
   html += "<code>{astronomical_dawn}</code>, ";
   html += "<code>{astronomical_dusk}</code>, ";
   html += "<code>{golden_hour_morning}</code>, ";
-  html += "<code>{golden_hour_evening}</code>";
+  html += "<code>{golden_hour_evening}</code>, ";
+  html += "<code>{next_golden_hour}</code>";
   html += "</details>";
 
   // DTMF # message
   html += "<h2>DTMF # Message</h2>";
   html += "<label>Text to speak on DTMF # (empty to disable):</label>";
-  html += "<textarea name='hashmsg' rows='3' style='width:100%'>" + dtmfHashMessage + "</textarea>";
+  html += "<textarea name='hashmsg' rows='3' style='width:100%'>" + escapeHTML(dtmfHashMessage) + "</textarea>";
 
   // Time & timezone
   html += "<h2>Time &amp; Timezone</h2>";
   html += "<div id='deviceTime' style='padding:8px;background:#eee;margin:5px 0;font-family:monospace;'></div>";
   html += "<label>Timezone (POSIX TZ string):</label>";
-  html += "<input name='tz' id='tzInput' value='" + timezonePosix + "' placeholder='EST5EDT,M3.2.0,M11.1.0' style='width:100%'>";
+  html += "<input name='tz' id='tzInput' value='" + escapeHTML(timezonePosix) + "' placeholder='EST5EDT,M3.2.0,M11.1.0' style='width:100%'>";
   html += "<button type='button' onclick='detectTZ()'>Detect From Browser</button>";
   html += "<span id='tzStatus'></span><br>";
   html += "<label>Set Time (local):</label>";
@@ -261,12 +284,14 @@ void handleSave() {
   String newRxCTCSS = server.arg("rxctcss");
   String newSquelch = server.arg("squelch");
   String newRadioVol = server.arg("radiovol");
-  String newFilterBP = server.arg("filterbp");
-  String newFilterDEN = server.arg("filterden");
-  String newFilterDER = server.arg("filterder");
+  bool newFilterBP = server.hasArg("filterbp");
+  bool newFilterDEN = server.hasArg("filterden");
+  bool newFilterDER = server.hasArg("filterder");
+  bool newBandwidth25 = server.hasArg("bandwidth25");
   String newSamVol = server.arg("samvol");
   String newToneVol = server.arg("tonevol");
   String newPlayVol = server.arg("playvol");
+  String newTestVol = server.arg("testvol");
   bool newTestMode = server.hasArg("testmode");
   bool newDtmfAReboot = server.hasArg("dtmfareboot");
 
@@ -299,15 +324,11 @@ void handleSave() {
   if (newRadioVol.length() > 0) {
     preferences.putInt("radiovol", constrain(newRadioVol.toInt(), 0, 8));
   }
-  if (newFilterBP.length() > 0) {
-    preferences.putInt("filterbp", constrain(newFilterBP.toInt(), 0, 1));
-  }
-  if (newFilterDEN.length() > 0) {
-    preferences.putInt("filterden", constrain(newFilterDEN.toInt(), 0, 1));
-  }
-  if (newFilterDER.length() > 0) {
-    preferences.putInt("filterder", constrain(newFilterDER.toInt(), 0, 1));
-  }
+  // SA868 filter checkboxes (0=off, 1=on)
+  preferences.putInt("filterbp", newFilterBP ? 1 : 0);
+  preferences.putInt("filterden", newFilterDEN ? 1 : 0);
+  preferences.putInt("filterder", newFilterDER ? 1 : 0);
+  preferences.putInt("bandwidth25", newBandwidth25 ? 1 : 0);
   if (newSamVol.length() > 0) {
     preferences.putInt("samvol", constrain(newSamVol.toInt(), 0, 100));
   }
@@ -316,6 +337,9 @@ void handleSave() {
   }
   if (newPlayVol.length() > 0) {
     preferences.putInt("playvol", constrain(newPlayVol.toInt(), 0, 200));
+  }
+  if (newTestVol.length() > 0) {
+    preferences.putInt("testvol", constrain(newTestVol.toInt(), 0, 100));
   }
   preferences.putBool("testmode", newTestMode);
   preferences.putBool("dtmfareboot", newDtmfAReboot);
@@ -490,11 +514,13 @@ void initWiFi() {
   radioFilterBP = preferences.getInt("filterbp", 0);     // Bandpass filter
   radioFilterDENoise = preferences.getInt("filterden", 0); // De-noise
   radioFilterDER = preferences.getInt("filterder", 0);   // De-emphasis
+  radioBandwidth25 = preferences.getInt("bandwidth25", 0); // 25 kHz bandwidth (default off for 12.5 kHz)
 
   // Audio settings
   samVolumePercent = preferences.getInt("samvol", 25);
   toneVolumePercent = preferences.getInt("tonevol", 12);
   playbackVolumePercent = preferences.getInt("playvol", 50);
+  radioTestVolumePercent = preferences.getInt("testvol", 50);
 
   // Pin configuration
 #ifdef BOARD_TTWR
@@ -540,6 +566,7 @@ void initWiFi() {
     // Try to connect
     Serial.printf("WiFi connecting to %s...\n", wifiSSID.c_str());
     WiFi.mode(WIFI_STA);
+    WiFi.setAutoReconnect(true); // Allow background recovery if router reboots
     WiFi.begin(wifiSSID.c_str(), wifiPassword.c_str());
 
     // Wait up to 10 seconds for connection

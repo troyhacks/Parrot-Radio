@@ -5,6 +5,8 @@
 #include <freertos/FreeRTOS.h>
 #include <freertos/task.h>
 #include <freertos/queue.h>
+#include <freertos/event_groups.h>
+#include <esp_task_wdt.h>
 #include "espeak.h"
 #include "radio.h"
 #include "weather_sensor.h"
@@ -15,6 +17,10 @@
 #define TTS_TASK_STACK_SIZE (64 * 1024)  // 64KB stack in BYTES (ESP32 IDF uses bytes, not words)
 static TaskHandle_t s_ttsTaskHandle = nullptr;
 static QueueHandle_t s_ttsQueue = nullptr;
+
+// TTS completion synchronization
+static EventGroupHandle_t s_ttsEvents = nullptr;
+#define TTS_DONE_BIT (1 << 0)
 
 // TTS output buffer
 static int16_t ttsBuffer[512];
@@ -34,13 +40,15 @@ public:
       // Accumulate bytes into int16_t samples
       if (i + 1 < size) {
         int16_t sample = (int16_t)(buffer[i] | (buffer[i + 1] << 8));
-        sample = (int16_t)(sample * samVolumePercent / 100.0f);
+        // Pure integer math to prevent FPU overhead
+        sample = (int16_t)(((int32_t)sample * samVolumePercent) / 100);
         ttsBuffer[ttsBufferIndex++] = sample;
         i += 2;
 
         if (ttsBufferIndex >= 512) {
-          audioWrite(ttsBuffer, ttsBufferIndex);
+          audioWrite(ttsBuffer, ttsBufferIndex); // i2sWrite naturally blocks if full
           ttsBufferIndex = 0;
+          esp_task_wdt_reset(); // Feed watchdog without causing DMA stutter
         }
       } else {
         i++;  // Odd trailing byte, skip
@@ -62,7 +70,8 @@ static ESpeak espeak(ttsOut);
 
 // ==================== Helper Functions ====================
 // Convert integer to English words (avoids espeak deep recursion)
-static const char* s_ones[] = {"zero", "one", "two", "three", "four", "five", "six", "seven", "eight", "nine",
+// Note: "five" has trailing space to help espeak pronounce it correctly
+static const char* s_ones[] = {"zero", "one", "two", "three", "four", "five ", "six", "seven", "eight", "nine",
                                 "ten", "eleven", "twelve", "thirteen", "fourteen", "fifteen", "sixteen", "seventeen", "eighteen", "nineteen"};
 static const char* s_tens[] = {"", "", "twenty", "thirty", "forty", "fifty", "sixty", "seventy", "eighty", "ninety"};
 
@@ -71,7 +80,16 @@ static String intToWords(int n) {
   String s;
   if (n < 0) { s = "minus "; n = -n; }
   if (n >= 100) { s += s_ones[n/100]; s += " hundred "; n %= 100; }
-  if (n >= 20) { s += s_tens[n/10]; if (n%10) { s += " "; s += s_ones[n%10]; } }
+  if (n >= 20) {
+    // Handle 50-59 specially: use "five X" instead of "fifty X" to avoid espeak pronunciation issues
+    if (n >= 50 && n < 60) {
+      s += "five ";
+      s += s_ones[n % 10];
+    } else {
+      s += s_tens[n/10];
+      if (n % 10) { s += " "; s += s_ones[n % 10]; }
+    }
+  }
   else if (n >= 1) s += s_ones[n];
   return s;
 }
@@ -93,6 +111,73 @@ static String formatTimeHM(int hour, int minute) {
     s += " " + intToWords(minute);     // e.g. "three thirty three"
   }
   s += hour < 12 ? " AM" : " PM";
+  return s;
+}
+
+// Format decimals like "43.65" as "forty three point six five"
+static String formatDecimalString(const String& val) {
+  int dotIndex = val.indexOf('.');
+  if (dotIndex == -1) return intToWords(val.toInt());
+  int intPart = val.substring(0, dotIndex).toInt();
+  String out = intToWords(intPart) + " point";
+  for (size_t i = dotIndex + 1; i < val.length(); i++) {
+    if (val[i] >= '0' && val[i] <= '9') {
+      out += " " + intToWords(val[i] - '0');
+    }
+  }
+  return out;
+}
+
+static String formatFloatToWords(float value, int decimalPlaces) {
+  return formatDecimalString(String(value, decimalPlaces));
+}
+
+// Format date as spoken: "May third, twenty twenty-six"
+static String formatDateSpoken(int year, int month, int day) {
+  static const char* months[] = {
+    "January", "February", "March", "April", "May", "June",
+    "July", "August", "September", "October", "November", "December"
+  };
+  static const char* ordinals[] = {
+    "first", "second", "third", "fourth", "fifth", "sixth", "seventh", "eighth", "ninth", "tenth",
+    "eleventh", "twelfth", "thirteenth", "fourteenth", "fifteenth", "sixteenth", "seventeenth", "eighteenth", "nineteenth", "twentieth",
+    "twenty-first", "twenty-second", "twenty-third", "twenty-fourth", "twenty-fifth", "twenty-sixth", "twenty-seventh", "twenty-eighth", "twenty-ninth", "thirtieth",
+    "thirty-first"
+  };
+
+  String s;
+  if (month >= 1 && month <= 12) {
+    s += months[month - 1];
+  } else {
+    s += "unknown";
+  }
+  s += " ";
+
+  if (day >= 1 && day <= 31) {
+    s += ordinals[day - 1];
+  } else {
+    s += "unknown";
+  }
+  s += ", ";
+
+  // Year: 2026 → "twenty twenty-six"
+  if (year >= 0) {
+    if (year >= 2000) {
+      int y = year - 2000;
+      if (y < 100) {
+        s += intToWords(y);
+      } else {
+        s += intToWords(year);
+      }
+    } else if (year >= 1000) {
+      s += intToWords(year);
+    } else {
+      s += intToWords(year);
+    }
+  } else {
+    s += "unknown";
+  }
+
   return s;
 }
 
@@ -148,8 +233,7 @@ String expandMacros(const String &text) {
   struct tm t;
   if (getLocalTime(&t, 0)) {
     char buf[64];  // Larger buffer to prevent overflow
-    strftime(buf, sizeof(buf), "%Y-%m-%d", &t);
-    result.replace("{date}", buf);
+    result.replace("{date}", formatDateSpoken(t.tm_year + 1900, t.tm_mon + 1, t.tm_mday));
     strftime(buf, sizeof(buf), "%H:%M", &t);
     result.replace("{time}", buf);
     result.replace("{time12}", formatTimeHM(t.tm_hour, t.tm_min));
@@ -170,7 +254,7 @@ String expandMacros(const String &text) {
   // Battery macros
   if (lastBatteryPct >= 0) {
     result.replace("{battery}", intToWords(lastBatteryPct) + " percent");
-    result.replace("{voltage}", intToWords((int)lastBatteryV) + " point " + intToWords((int)(lastBatteryV * 10) % 10) + " volts");
+    result.replace("{voltage}", formatFloatToWords(lastBatteryV, 1) + " volts");
   } else {
     result.replace("{battery}", "unknown");
     result.replace("{voltage}", "unknown");
@@ -184,7 +268,7 @@ String expandMacros(const String &text) {
   result.replace("{slots_used}", intToWords(usedSlots));
   result.replace("{slots_total}", intToWords(MAX_SLOTS));
   // Radio/system macros
-  result.replace("{freq}", radioFreq);
+  result.replace("{freq}", formatDecimalString(radioFreq));
   result.replace("{uptime}", intToWords(millis() / 60000) + " minutes");
   result.replace("{ip}", formatIPWords(WiFi.localIP().toString()));
   // Local weather sensor macros (BME280/BMP280)
@@ -228,10 +312,16 @@ String expandMacros(const String &text) {
     }
   }
 
+  // Next golden hour (morning or evening, whichever is next)
+  {
+    String gh = getNextGoldenHourWords();
+    result.replace("{next_golden_hour}", gh.length() > 0 ? gh : "no golden hour today");
+  }
+
   // GPS coordinates
   if (gpsData.valid) {
-    result.replace("{gps_lat}", String(gpsData.latitude, 4));
-    result.replace("{gps_lon}", String(gpsData.longitude, 4));
+    result.replace("{gps_lat}", formatFloatToWords(gpsData.latitude, 4));
+    result.replace("{gps_lon}", formatFloatToWords(gpsData.longitude, 4));
   } else {
     result.replace("{gps_lat}", "no fix");
     result.replace("{gps_lon}", "no fix");
@@ -269,6 +359,10 @@ String sanitizeForTTS(String text) {
   // Other units
   text.replace("%", " percent");
   text.replace("km/h", " kilometers per hour");
+
+  // Replace "listening" with "monitoring" — "ten" inside "listening" triggers
+  // espeak's number→words lookup, causing garbled pronunciation
+  text.replace("listening", "monitoring");
 
   // Replace words eSpeak's minimal dictionary can't pronounce with phoneme codes
   // DISABLED — causes stack overflow in espeak's number→words translation
@@ -316,6 +410,12 @@ void initTTS() {
     Serial.println("ERROR: TTS queue creation failed!");
     return;
   }
+
+  s_ttsEvents = xEventGroupCreate();
+  if (s_ttsEvents == nullptr) {
+    Serial.println("ERROR: TTS events creation failed!");
+    return;
+  }
   BaseType_t created = xTaskCreatePinnedToCore(
     ttsTaskFn,
     "tts",
@@ -342,17 +442,30 @@ static void ttsTaskFn(void* param) {
       Serial.printf("TTS: %s\n", processed.c_str());
       espeak.say(processed.c_str());
       ttsOut.flush();
+      // Yield after espeak returns to prevent watchdog
+      vTaskDelay(1);
+      // Signal TTS completion so callers can wait before PTT off
+      if (s_ttsEvents) {
+        xEventGroupSetBits(s_ttsEvents, TTS_DONE_BIT);
+      }
     }
   }
 }
 
 void sayText(const char* text) {
   if (s_ttsQueue == nullptr) return;
-  // Send to TTS task queue (non-blocking, drops if queue full)
+  // Send to TTS task queue (wait up to 100ms if queue full)
   char textBuf[512];
   strncpy(textBuf, text, sizeof(textBuf) - 1);
   textBuf[sizeof(textBuf) - 1] = '\0';
-  xQueueSend(s_ttsQueue, textBuf, 0);
+  xQueueSend(s_ttsQueue, textBuf, pdMS_TO_TICKS(100));
+}
+
+void waitForTTSDone() {
+  if (s_ttsEvents == nullptr) return;
+  // Wait for TTS task to signal completion
+  xEventGroupClearBits(s_ttsEvents, TTS_DONE_BIT);
+  xEventGroupWaitBits(s_ttsEvents, TTS_DONE_BIT, pdTRUE, pdFALSE, portMAX_DELAY);
 }
 
 void playTone(int frequency, int duration) {

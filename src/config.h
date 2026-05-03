@@ -121,11 +121,13 @@ extern int radioVolume;          // SA868 volume (0-8)
 extern int radioFilterBP;        // AT+SETFILTER bandpass: 0=off, 1=on
 extern int radioFilterDENoise;   // AT+SETFILTER de-noise: 0=off, 1=on
 extern int radioFilterDER;       // AT+SETFILTER de-emphasis: 0=off, 1=on
+extern int radioBandwidth25;     // SA868 bandwidth: 1=25kHz, 0=12.5kHz
 
 // Audio settings
 extern int samVolumePercent;
 extern int toneVolumePercent;
 extern int playbackVolumePercent;  // Gain for recorded audio playback (0-100+)
+extern int radioTestVolumePercent; // Gain for radio test audio (0-100)
 
 // Pin configuration (runtime)
 extern int pinPTT;

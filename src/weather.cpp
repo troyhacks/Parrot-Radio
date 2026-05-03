@@ -190,10 +190,18 @@ void speakWeather() {
   setAudioRoutingToRadio(true);
   setSpeakerMute(true);
   speakPreMessage();
+  drainAudio();
+  waitForTTSDone();
   sayText(("Weather report, " + report).c_str());
+  drainAudio();
+  waitForTTSDone();
   speakPostMessage();
+  drainAudio();
+  waitForTTSDone();
+  // Final drain to ensure DMA buffer is empty before PTT off
+  drainAudio();
+  delay(300);
   setSpeakerMute(false);
   setAudioRoutingToRadio(false);
-  delay(1000);
   pttOff();
 }

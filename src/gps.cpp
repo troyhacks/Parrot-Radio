@@ -17,6 +17,30 @@ bool gpsFound = false;
 static volatile bool ppsReceived = false;
 static unsigned long ppsTime = 0;
 
+// Convert UTC tm struct to epoch seconds (avoid timegm which isn't available in ESP32 newlib)
+static time_t tmToEpochUTC(struct tm* t) {
+  // Days per month (non-leap year)
+  static const int daysPerMonth[] = {31, 28, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31};
+  // Calculate days from 1970 to year
+  int year = t->tm_year + 1900;
+  long days = 0;
+  for (int y = 1970; y < year; y++) {
+    days += 365 + (y % 4 == 0 && (y % 100 != 0 || y % 400 == 0) ? 1 : 0);
+  }
+  // Add days for months
+  for (int m = 0; m < t->tm_mon; m++) {
+    days += daysPerMonth[m];
+  }
+  // Add days for leap year February
+  if (t->tm_mon > 1 && (year % 4 == 0 && (year % 100 != 0 || year % 400 == 0))) {
+    days += 1;
+  }
+  // Add days in current month (tm_mday is 1-based)
+  days += t->tm_mday - 1;
+  // Convert to seconds
+  return (time_t)days * 86400 + (time_t)t->tm_hour * 3600 + (time_t)t->tm_min * 60 + (time_t)t->tm_sec;
+}
+
 static void IRAM_ATTR ppsHandler() {
   ppsReceived = true;
   ppsTime = millis();
@@ -199,7 +223,7 @@ void initGPS() {
   // This is optional but helps ensure proper mode
   gpsSerial.println("$PUBX,40,GLL,0,0,0,0*5C");  // Disable GLL
   gpsSerial.println("$PUBX,40,RMC,0,1,0,0*47");   // Enable RMC
-  gpsSerial.println("$PUBX,40,GG A,0,1,0,0*46"); // Enable GGA
+  gpsSerial.println("$PUBX,40,GGA,0,1,0,0*5A"); // Enable GGA
 
   gpsFound = true;
   Serial.println("GPS: module initialized");
@@ -255,7 +279,7 @@ void syncRTCFromGPS() {
   t.tm_isdst = 0;
 
   // Convert to epoch seconds (UTC)
-  time_t epoch = mktime(&t);
+  time_t epoch = tmToEpochUTC(&t);
   if (epoch == -1) {
     Serial.println("GPS: failed to convert time");
     return;

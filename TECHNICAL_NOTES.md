@@ -166,3 +166,106 @@ espeak.setVoice("en-us");  // Use explicit US English voice
 
 ### Files Modified
 - `src/tts.cpp` - initTTS() voice selection
+
+---
+
+## TTS/PTT Synchronization Fix (2026-05-02)
+
+### Problem
+PTT was being released while TTS was still transmitting, cutting off the end of TTS messages. Also, TTS and recorded audio could interleave in the ring buffer, causing playback issues.
+
+Example symptom:
+
+```text
+TTS: Weather report, clear sky...
+Speaker unmuted
+PTT OFF        <-- PTT released while TTS still playing
+TTS: ...4 degrees, feels like 0 degrees...
+```
+
+### Root Cause
+
+1. `sayText()` queues TTS asynchronously and returns immediately - it does NOT wait for TTS to finish playing
+2. The original code used `delay(1000)` before `pttOff()` which was insufficient
+3. `playbackWithFeedback()` started TTS pre-message, then immediately began the recorded audio loop without waiting - causing TTS and recorded audio to interleave
+
+### Solution
+
+**1. Added TTS completion EventGroup synchronization (tts.cpp):**
+```cpp
+static EventGroupHandle_t s_ttsEvents = nullptr;
+#define TTS_DONE_BIT (1 << 0)
+
+// In ttsTaskFn, after flush():
+if (s_ttsEvents) {
+  xEventGroupSetBits(s_ttsEvents, TTS_DONE_BIT);
+}
+
+// New function:
+void waitForTTSDone() {
+  if (s_ttsEvents == nullptr) return;
+  xEventGroupClearBits(s_ttsEvents, TTS_DONE_BIT);
+  xEventGroupWaitBits(s_ttsEvents, TTS_DONE_BIT, pdTRUE, pdFALSE, portMAX_DELAY);
+}
+```
+
+**2. Added watchdog yield in TTS output (tts.cpp):**
+```cpp
+// In TTSOutput::write(), after each 512-sample buffer:
+audioWrite(ttsBuffer, ttsBufferIndex);
+ttsBufferIndex = 0;
+vTaskDelay(1);  // Yield to prevent watchdog timeout
+```
+
+**3. Fixed all TTS callers to wait for completion before PTT off:**
+
+- `speakWeather()`: drains and waits after each of speakPreMessage, sayText, speakPostMessage
+- `playbackWithFeedback()`: drains and waits after speakPreMessage, before recorded audio loop
+- DTMF A/B/C/D/# handlers in parrot.cpp: waitForTTSDone() instead of delay(1000)
+
+### Files Modified
+
+- `src/tts.cpp` - EventGroup sync, vTaskDelay(1) yield
+- `src/tts.h` - waitForTTSDone() declaration
+- `src/weather.cpp` - proper drain/wait sequencing
+- `src/radio.cpp` - playbackWithFeedback sequencing
+- `src/radio.h` - drainAudio() export
+- `src/parrot.cpp` - all DTMF TTS handlers
+
+### Key Pattern for TTS + PTT
+```cpp
+speakPreMessage();           // Queue TTS
+drainAudio();                // Wait for ring buffer to empty
+waitForTTSDone();            // Wait for TTS generation to complete
+drainAudio();                // Final drain of last TTS samples
+
+// Now safe to release PTT
+pttOff();
+```
+
+---
+
+## Sun Calculation Fix (2026-05-02)
+
+### Problem
+Sunrise/sunset times were completely wrong - sunrise at 3:33 AM, sunset at 5:45 PM (when Toronto should have sunrise ~6:08 AM, sunset ~8:21 PM in early May).
+
+### Root Cause
+The original custom sun calculation code had multiple bugs in the Julian Day calculation, obliquity correction, and EoT formula.
+
+### Solution
+Replaced the custom implementation with the well-tested `buelowp/sunset` Arduino library. Key fix was understanding the timezone offset sign:
+
+```cpp
+// gmtOffsetSeconds is +14400 for EDT (UTC-4)
+// Sunset library adds this to UTC to get local, so we negate
+float tzOffsetHours = -gmtOffsetSeconds / 3600.0f;  // = -4 for EDT
+```
+
+### Files Modified
+- `platformio.ini` - Added `buelowp/sunset@^1.1.0` library
+- `src/sun.cpp` - Replaced custom calculation with Sunset library
+- `src/parrot.cpp` - Changed "Astronomical dusk" to "Night sky dusk" (espeak pronunciation issue)
+
+### Additional Fix
+Changed "Astronomical" to "Night sky" in TTS output because espeak-ng's minimal dictionary doesn't recognize "Astronomical" and produces garbled output.

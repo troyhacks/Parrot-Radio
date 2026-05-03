@@ -3,12 +3,13 @@
 
 #include <Arduino.h>
 
-// Forward declare for i2sWrite dependency
-void i2sWrite(int16_t* data, size_t samples);
+// Forward declare for audioWrite dependency (defined in radio.h)
+void audioWrite(int16_t* data, size_t samples);
 
 // TTS functions
 void initTTS();
 void sayText(const char* text);
+void waitForTTSDone();
 void playTone(int frequency, int duration);
 void playVoiceMessage(const char* message);
 
