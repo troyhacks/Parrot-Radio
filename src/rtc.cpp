@@ -176,9 +176,14 @@ void syncNTP() {
       Serial.println("RTC updated from NTP");
     }
 #endif
+
+    // If timezone not set in preferences, try to get it from GPS coordinates (BETA)
+    if (timezonePosix.length() == 0) {
+      applyTimezoneFromGPS();
+    }
   } else {
     Serial.println("NTP sync failed (timeout)");
-    // Try GPS as fallback
+    // Try GPS as fallback (syncs time AND timezone)
     syncRTCFromGPS();
   }
 }

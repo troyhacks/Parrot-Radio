@@ -191,7 +191,10 @@ void handleRoot() {
   html += "<label>Timezone (POSIX TZ string):</label>";
   html += "<input name='tz' id='tzInput' value='" + escapeHTML(timezonePosix) + "' placeholder='EST5EDT,M3.2.0,M11.1.0' style='width:100%'>";
   html += "<button type='button' onclick='detectTZ()'>Detect From Browser</button>";
-  html += "<span id='tzStatus'></span><br>";
+  html += "<span id='tzStatus'></span>";
+  html += "<br><small style='color:#666'>";
+  html += "If blank, timezone is auto-detected from GPS coordinates (BETA - may not work in all regions). ";
+  html += "GPS must have a fix after NTP sync or as fallback.</small><br>";
   html += "<label>Set Time (local):</label>";
   html += "<input name='manualtime' id='manualTime' placeholder='2025-06-15 14:30:00' style='width:60%'>";
   html += "<button type='button' onclick='setBrowserTime()'>Use Browser Time</button>";

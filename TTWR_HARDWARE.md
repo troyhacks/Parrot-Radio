@@ -240,6 +240,23 @@ Reference Implementation Details:
 
 ---
 
+## GPS Module
+
+### Timezone from GPS Coordinates (BETA)
+
+The T-TWR can auto-detect timezone from GPS coordinates using bounding-box region lookup.
+
+**Workflow**:
+1. NTP sync succeeds → If timezone not set in preferences → Try GPS coordinates → Apply timezone
+2. NTP sync fails → Sync time from GPS → Apply timezone from GPS coordinates
+
+**Limitations**:
+- Uses bounding-box regions, not precise timezone boundaries
+- May fail near timezone borders
+- Antarctica and remote regions may get incorrect timezone
+
+---
+
 ## SA868 Radio Module
 
 ### UART Configuration
@@ -315,15 +332,49 @@ Display states with custom status text:
 
 ## Pin Summary (T-TWR)
 
-| Pin | Function |
-|-----|----------|
-| 1 | ADC input (radio audio) |
-| 2 | AUDIO_ON (squelch detect) |
-| 8 | I2C SDA |
-| 9 | I2C SCL |
-| 17 | MIC_CH_SEL (audio routing) |
-| 18 | ESP2MIC (audio output) |
-| 39 | SA868_RX (UART TX) |
-| 40 | PD_PIN (SA868 power down) |
-| 41 | PTT_PIN (push-to-talk) |
-| 48 | SA868_TX (UART RX) |
+### GPIO Pins
+
+| Pin | Function | Used |
+|-----|----------|------|
+| 1 | Analog Input (audio in from SA868) | Yes - ADC audio |
+| 2 | Audio ON (squelch detect) | Yes - squelch detect |
+| 3 | Reserved | No |
+| 4 | PTT In (external PTT input) | No |
+| 5 | PTT Out (to host) | No |
+| 6 | PPS (GPS pulse per second) | No |
+| 7 | SD Card Detect | No |
+| 8 | I2C SDA (PMU/OLED) | Yes - I2C |
+| 9 | I2C SCL (PMU/OLED) | Yes - I2C |
+| 10-13 | Flash IO0-3 | No |
+| 14-16 | Reserved | No |
+| 17 | MIC_CH_SEL (audio mux) | Yes - audio routing |
+| 18 | ESP2MIC (audio out to SA868) | Yes - audio output |
+| 19-20 | USB DM/DP | No |
+| 21, 35-38 | Reserved | No |
+| 39 | SA868_RX (UART TX to SA868) | Yes - UART |
+| 40 | PD (SA868 power down) | Yes - SA868 PD |
+| 41 | PTT (to SA868) | Yes - PTT |
+| 42 | Reserved | No |
+| 43 | UART TX (debug) | No |
+| 44 | UART RX (debug) | No |
+| 45-48 | Reserved/GPIO48=SA868_TX | Partial - GPIO48 used |
+
+### Power Connectors
+
+| Connector | Function |
+|-----------|----------|
+| 2-pin JST 5V IN | External 5V input |
+| 2-pin Battery | LiPo battery connector |
+| +B | Battery voltage sense |
+| VBUS | USB 5V sense |
+| 3V3 | 3.3V rail |
+| 5V | 5V rail |
+
+### Other
+
+| Connector | Function |
+|-----------|----------|
+| SMA | Antenna connector |
+| 2-pin Speaker/Buzzer | Speaker or buzzer output |
+| 4-pin GPS | GPS module connector |
+| 1-pin 2PPS | GPS pulse per second |

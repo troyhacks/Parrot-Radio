@@ -78,7 +78,7 @@ This is the recommended hardware platform. ESP32-S3 based with integrated SA868 
 - **AXP2101 PMU**: Battery monitoring, speaker mute control
 - **BME280/BMP280**: Temperature, pressure, humidity sensor
 - **DS3231 RTC**: Accurate timekeeping
-- **GPS**: Time synchronization
+- **GPS**: Time synchronization, location (for weather/sun calculations)
 - **WiFi**: Web configuration, NTP sync
 - **Battery**: LiPo support with monitoring
 
@@ -87,6 +87,19 @@ This is the recommended hardware platform. ESP32-S3 based with integrated SA868 
 - AP mode: SSID "RadioParrot", password "parrot123"
 - Preferences stored in flash (survives reboot)
 - WiFi auto-reconnect enabled
+
+### Timezone (BETA)
+Timezone can be auto-detected from GPS coordinates:
+
+1. If timezone is **set in preferences**: Use configured timezone
+2. If timezone is **blank**:
+   - After NTP sync succeeds → Try GPS coordinates → Apply timezone
+   - If NTP fails → Sync time from GPS → Apply timezone from GPS coordinates
+
+**Limitations**:
+- Uses bounding-box regions for timezone lookup, not precise timezone boundaries
+- May not work correctly near timezone borders
+- Antarctica and other remote regions may get incorrect timezone
 
 ### Enclosure
 3D printed case available on Printables: [LilyGo T-TWR V2.1 Case](https://www.printables.com/model/983103-lilygo-t-twr-v21-case)

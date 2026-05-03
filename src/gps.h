@@ -37,3 +37,6 @@ void syncRTCFromGPS();
 
 // Update timezone from current GPS coordinates (call periodically when GPS has a fix)
 void updateTimezoneFromGPS();
+
+// Apply timezone from GPS coordinates (if GPS has fix and timezone not already set)
+void applyTimezoneFromGPS();

@@ -306,3 +306,17 @@ void updateTimezoneFromGPS() {
   // Timezone is set from preferences at boot - GPS coordinates are for display only
   // Do NOT update timezone from GPS coordinates to avoid clock drift issues
 }
+
+void applyTimezoneFromGPS() {
+  // Set timezone from GPS coordinates (called after NTP sync if timezone not configured)
+  if (!gpsData.valid) {
+    Serial.println("GPS: no fix, cannot set timezone from coordinates");
+    return;
+  }
+  const char* tz = getTimezoneForCoords(gpsData.latitude, gpsData.longitude);
+  if (tz) {
+    timezonePosix = tz;
+    applyTimezone();
+    Serial.printf("Timezone set from GPS: %s\n", tz);
+  }
+}
