@@ -2,9 +2,9 @@
 
 <img width="50%" height="50%" alt="A pirate parrot holding a fancy walkie-talkie" src="https://github.com/user-attachments/assets/26e68f07-50eb-4d0b-9f52-cfbfe3091408" />
 
----
-
 ## T-TWR Plus Rev 2.1 Features (Current Best)
+
+**Hardware Details**: [TTWR_HARDWARE.md](TTWR_HARDWARE.md) - Deep dive into ESP32-S3 ADC audio, LEDC PWM output, PMU, and more.
 
 This is the recommended hardware platform. ESP32-S3 based with integrated SA868 radio, PMU, OLED, and GPS.
 
