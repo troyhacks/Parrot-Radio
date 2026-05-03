@@ -332,32 +332,40 @@ Display states with custom status text:
 
 ## Pin Summary (T-TWR)
 
-### GPIO Pins
+### GPIO Pins (Rev 2.1)
 
-| Pin | Function | Used |
-|-----|----------|------|
-| 1 | Analog Input (audio in from SA868) | Yes - ADC audio |
-| 2 | Audio ON (squelch detect) | Yes - squelch detect |
-| 3 | Reserved | No |
-| 4 | PTT In (external PTT input) | No |
-| 5 | PTT Out (to host) | No |
-| 6 | PPS (GPS pulse per second) | No |
-| 7 | SD Card Detect | No |
-| 8 | I2C SDA (PMU/OLED) | Yes - I2C |
-| 9 | I2C SCL (PMU/OLED) | Yes - I2C |
-| 10-13 | Flash IO0-3 | No |
-| 14-16 | Reserved | No |
-| 17 | MIC_CH_SEL (audio mux) | Yes - audio routing |
-| 18 | ESP2MIC (audio out to SA868) | Yes - audio output |
-| 19-20 | USB DM/DP | No |
-| 21, 35-38 | Reserved | No |
-| 39 | SA868_RX (UART TX to SA868) | Yes - UART |
-| 40 | PD (SA868 power down) | Yes - SA868 PD |
-| 41 | PTT (to SA868) | Yes - PTT |
-| 42 | Reserved | No |
-| 43 | UART TX (debug) | No |
-| 44 | UART RX (debug) | No |
-| 45-48 | Reserved/GPIO48=SA868_TX | Partial - GPIO48 used |
+| GPIO | Subsystem | Function | Used |
+|------|-----------|----------|------|
+| IO01 | Radio Module | AU / RADIO_SQL (squelch) | Yes - squelch |
+| IO03 | User Interface | PTT Button / USER BTN | No |
+| IO04 | PMU | PMU IRQ | No |
+| IO05 | GNSS Module | GNSS_RX | No |
+| IO06 | GNSS Module | GNSS_TX | No |
+| IO07 | GNSS Module | GNSS_1PPS | No |
+| IO08 | I2C Bus | SDA (OLED & PMU) | Yes - I2C |
+| IO09 | I2C Bus | SCL (OLED & PMU) | Yes - I2C |
+| IO10 | SPI / SD Card | SPI_CS / SD_CS | No |
+| IO11 | SPI / SD Card | SPI_MOSI / SD_MOSI | No |
+| IO12 | SPI / SD Card | SPI_SCK / SD_SCK | No |
+| IO13 | SPI / SD Card | SPI_MISO / SD_MISO | No |
+| IO14 | Breakout Header | TOUCH14 / FSPI_WP / ADC2_CH3 | No |
+| IO15 | Power / Misc | BAT ADC / U0RTS / ESP2MIC ADC | No |
+| IO16 | Breakout Header | U0CTS / TX1 | No |
+| IO17 | Radio Module | MIC_CH_SEL (Analog Switch Control) | Yes - audio routing |
+| IO18 | Radio Module | RADIO_MIC (audio out) | Yes - audio output |
+| IO21 | Rotary Encoder | ENCODER_OK / ROTARY_S | No |
+| IO33-37 | Internal Memory | Reserved for N16R8 Octal SPI PSRAM | No |
+| IO38 | Radio Module | Radio RF | No |
+| IO39 | Radio Module | RADIO_TX (UART TX to radio) | Yes - UART TX |
+| IO40 | Radio Module | RADIO_PD (Power Down) | Yes - SA868 PD |
+| IO41 | Radio Module | RADIO_PTT (Push-to-Talk) | Yes - PTT |
+| IO42 | User Interface | WS2812 RGB LED (PIXEL) | No |
+| IO43 | Breakout Header | CLK_OUT1 | No |
+| IO44 | Breakout Header | CLK_OUT2 | No |
+| IO45 | Breakout Header | NC / Available on Side Breakout | No |
+| IO46 | Rotary Encoder | ENCODER_B / ROTARY_B | No |
+| IO47 | Rotary Encoder | ENCODER_A / ROTARY_A | No |
+| IO48 | Radio Module | RADIO_RX (UART RX from radio) | Yes - UART RX |
 
 ### Power Connectors
 
