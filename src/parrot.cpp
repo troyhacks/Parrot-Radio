@@ -378,15 +378,16 @@ void loop() {
         SolarTimes st = calculateSunTimes(weatherLat, weatherLon, t->tm_year + 1900, t->tm_mon + 1, t->tm_mday);
         char buf[512];
         if (st.valid) {
+          String nightSkyDusk = getAstronomicalDuskWords();
           String nextGH = getNextGoldenHourWords();
           if (nextGH.length() > 0) {
             snprintf(buf, sizeof(buf),
-              "Sunrise at %s, sunset at %s. %s.",
-              getSunriseWords().c_str(), getSunsetWords().c_str(), nextGH.c_str());
+              "Sunrise at %s, sunset at %s. Night sky dusk at %s. %s.",
+              getSunriseWords().c_str(), getSunsetWords().c_str(), nightSkyDusk.c_str(), nextGH.c_str());
           } else {
             snprintf(buf, sizeof(buf),
-              "Sunrise at %s, sunset at %s. No golden hour today.",
-              getSunriseWords().c_str(), getSunsetWords().c_str());
+              "Sunrise at %s, sunset at %s. Night sky dusk at %s. No golden hour today.",
+              getSunriseWords().c_str(), getSunsetWords().c_str(), nightSkyDusk.c_str());
           }
         } else {
           snprintf(buf, sizeof(buf), "Unable to calculate sun times for current location");
@@ -576,15 +577,16 @@ void loop() {
         SolarTimes st = calculateSunTimes(weatherLat, weatherLon, t->tm_year + 1900, t->tm_mon + 1, t->tm_mday);
         char buf[512];
         if (st.valid) {
+          String nightSkyDusk = getAstronomicalDuskWords();
           String nextGH = getNextGoldenHourWords();
           if (nextGH.length() > 0) {
             snprintf(buf, sizeof(buf),
-              "Sunrise at %s, sunset at %s. %s.",
-              getSunriseWords().c_str(), getSunsetWords().c_str(), nextGH.c_str());
+              "Sunrise at %s, sunset at %s. Night sky dusk at %s. %s.",
+              getSunriseWords().c_str(), getSunsetWords().c_str(), nightSkyDusk.c_str(), nextGH.c_str());
           } else {
             snprintf(buf, sizeof(buf),
-              "Sunrise at %s, sunset at %s. No golden hour today.",
-              getSunriseWords().c_str(), getSunsetWords().c_str());
+              "Sunrise at %s, sunset at %s. Night sky dusk at %s. No golden hour today.",
+              getSunriseWords().c_str(), getSunsetWords().c_str(), nightSkyDusk.c_str());
           }
         } else {
           snprintf(buf, sizeof(buf), "Unable to calculate sun times for current location");

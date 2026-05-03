@@ -47,6 +47,9 @@ String getSunriseWords();
 // Get sunset time as words for TTS (e.g., "eight twenty one PM")
 String getSunsetWords();
 
+// Get astronomical dusk (night sky dusk) as words for TTS
+String getAstronomicalDuskWords();
+
 // Check if current time is between sunrise and sunset
 bool isDaytime();
 

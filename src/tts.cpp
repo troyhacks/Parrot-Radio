@@ -81,14 +81,8 @@ static String intToWords(int n) {
   if (n < 0) { s = "minus "; n = -n; }
   if (n >= 100) { s += s_ones[n/100]; s += " hundred "; n %= 100; }
   if (n >= 20) {
-    // Handle 50-59 specially: use "five X" instead of "fifty X" to avoid espeak pronunciation issues
-    if (n >= 50 && n < 60) {
-      s += "five ";
-      s += s_ones[n % 10];
-    } else {
-      s += s_tens[n/10];
-      if (n % 10) { s += " "; s += s_ones[n % 10]; }
-    }
+    s += s_tens[n/10];
+    if (n % 10) { s += " "; s += s_ones[n % 10]; }
   }
   else if (n >= 1) s += s_ones[n];
   return s;
@@ -364,6 +358,10 @@ String sanitizeForTTS(String text) {
   // espeak's number→words lookup, causing garbled pronunciation
   text.replace("listening", "monitoring");
 
+  // Replace "five" with "fife" — espeak mispronounces standalone "five" as "VEE"
+  // Using "fife" which espeak pronounces correctly and sounds nearly identical
+  text.replace(" five ", " fife ");
+
   // Replace words eSpeak's minimal dictionary can't pronounce with phoneme codes
   // DISABLED — causes stack overflow in espeak's number→words translation
   // applyPhonemes(text);
@@ -454,6 +452,8 @@ static void ttsTaskFn(void* param) {
 
 void sayText(const char* text) {
   if (s_ttsQueue == nullptr) return;
+  // Debug: show what macro expansion produced before TTS processes it
+  Serial.printf("TTS>> %s\n", text);
   // Send to TTS task queue (wait up to 100ms if queue full)
   char textBuf[512];
   strncpy(textBuf, text, sizeof(textBuf) - 1);

@@ -156,6 +156,11 @@ String getSunsetWords() {
   return formatTimeHMWords(lastResult.sunsetHour, lastResult.sunsetMinute);
 }
 
+String getAstronomicalDuskWords() {
+  if (!lastResult.valid) return "unknown";
+  return formatTimeHMWords(lastResult.sunsetAstronomicalHour, lastResult.sunsetAstronomicalMinute);
+}
+
 bool isDaytime() {
   if (!lastResult.valid) return false;
 
