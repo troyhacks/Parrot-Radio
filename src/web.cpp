@@ -201,9 +201,8 @@ void handleRoot() {
 
   // Testing mode
   html += "<h2>Mode</h2>";
-  html += "<label><input type='checkbox' name='testmode' value='1'" + String(testingMode ? " checked" : "") + "> Testing Mode (PTT disabled)</label>";
-  html += "<br>";
-  html += "<label><input type='checkbox' name='dtmfareboot' value='1'" + String(dtmfARebootEnabled ? " checked" : "") + "> DTMF A triggers instant reboot</label>";
+  html += "<div class='checkbox-item'><input type='checkbox' name='testmode' value='1'" + String(testingMode ? " checked" : "") + "><label>Testing Mode (PTT disabled)</label></div>";
+  html += "<div class='checkbox-item'><input type='checkbox' name='dtmfareboot' value='1'" + String(dtmfARebootEnabled ? " checked" : "") + "><label>DTMF A triggers instant reboot</label></div>";
 
   html += "<br><br><input type='submit' value='Save & Reboot'>";
   html += "</form>";

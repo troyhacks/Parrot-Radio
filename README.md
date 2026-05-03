@@ -88,6 +88,11 @@ This is the recommended hardware platform. ESP32-S3 based with integrated SA868 
 - Preferences stored in flash (survives reboot)
 - WiFi auto-reconnect enabled
 
+### Safety
+- **Testing Mode defaults to ON** (PTT disabled) on fresh flash
+- Must explicitly uncheck "Testing Mode" in web interface to enable transmission
+- Prevents accidental transmission during development/configuration
+
 ### Timezone (BETA)
 Timezone can be auto-detected from GPS coordinates:
 
