@@ -290,6 +290,22 @@ setSpeakerMute(true);   // Enable ALDO3 - mutes speaker
 setSpeakerMute(false);  // Disable ALDO3 - unmute speaker
 ```
 
+### Battery Monitoring (T-TWR vs Original Board)
+
+**T-TWR (Rev 2.1)**: Battery is monitored via AXP2101 PMU over I2C:
+- `pmu.getBattVoltage()` - battery voltage in millivolts
+- `pmu.getBatteryPercent()` - battery percentage
+- `pmu.isBatteryConnect()` - battery presence
+- `pmu.isVbusIn()` - external power connected
+- `pmu.isCharging()` - charging status
+
+**Original ESP32-WROVER-KIT**: Battery monitoring uses GPIO 35 with a voltage divider:
+- Configured via `VBAT_PIN` (default 35) in config.h
+- `pinVBAT` can be set to -1 to disable GPIO-based monitoring
+- T-TWR code prefers PMU readings; GPIO readings are a fallback if `pinVBAT >= 0`
+
+**Important**: The `pinVBAT` setting in web interface allows disabling or remapping GPIO-based battery reading. On T-TWR with AXP2101, this can be set to -1 since the PMU provides better battery data.
+
 ## Display States
 
 The display has 4 lines:
@@ -334,38 +350,44 @@ Display states with custom status text:
 
 ### GPIO Pins (Rev 2.1)
 
-| GPIO | Subsystem | Function | Used |
-|------|-----------|----------|------|
-| IO01 | Radio Module | AU / RADIO_SQL (squelch) | Yes - squelch |
-| IO03 | User Interface | PTT Button / USER BTN | No |
-| IO04 | PMU | PMU IRQ | No |
-| IO05 | GNSS Module | GNSS_RX | No |
-| IO06 | GNSS Module | GNSS_TX | No |
-| IO07 | GNSS Module | GNSS_1PPS | No |
-| IO08 | I2C Bus | SDA (OLED & PMU) | Yes - I2C |
-| IO09 | I2C Bus | SCL (OLED & PMU) | Yes - I2C |
-| IO10 | SPI / SD Card | SPI_CS / SD_CS | No |
-| IO11 | SPI / SD Card | SPI_MOSI / SD_MOSI | No |
-| IO12 | SPI / SD Card | SPI_SCK / SD_SCK | No |
-| IO13 | SPI / SD Card | SPI_MISO / SD_MISO | No |
-| IO14 | Breakout Header | TOUCH14 / FSPI_WP / ADC2_CH3 | No |
-| IO15 | Power / Misc | BAT ADC / U0RTS / ESP2MIC ADC | No |
-| IO16 | Breakout Header | U0CTS / TX1 | No |
-| IO17 | Radio Module | MIC_CH_SEL (Analog Switch Control) | Yes - audio routing |
-| IO18 | Radio Module | RADIO_MIC (audio out) | Yes - audio output |
-| IO21 | Rotary Encoder | ENCODER_OK / ROTARY_S | No |
-| IO33-37 | Internal Memory | Reserved for N16R8 Octal SPI PSRAM | No |
-| IO38 | Radio Module | Radio RF | No |
-| IO39 | Radio Module | RADIO_TX (UART TX to radio) | Yes - UART TX |
-| IO40 | Radio Module | RADIO_PD (Power Down) | Yes - SA868 PD |
-| IO41 | Radio Module | RADIO_PTT (Push-to-Talk) | Yes - PTT |
-| IO42 | User Interface | WS2812 RGB LED (PIXEL) | No |
-| IO43 | Breakout Header | CLK_OUT1 | No |
-| IO44 | Breakout Header | CLK_OUT2 | No |
-| IO45 | Breakout Header | NC / Available on Side Breakout | No |
-| IO46 | Rotary Encoder | ENCODER_B / ROTARY_B | No |
-| IO47 | Rotary Encoder | ENCODER_A / ROTARY_A | No |
-| IO48 | Radio Module | RADIO_RX (UART RX from radio) | Yes - UART RX |
+**Note**: There are some discrepancies between the official LilyGo pinout and the actual code usage:
+- **IO01**: Listed as "AU / RADIO_SQL" in official docs, but code uses it as **ADC audio input** (RADIO_AUDIO_PIN), not squelch
+- **IO02**: Code uses this as **squelch input** (AUDIO_ON_PIN), not IO01
+- **IO15**: Labeled "ESP2MIC ADC" but this function is only active when analog switch routes physical mic to ESP32; otherwise unused
+
+| GPIO | Code Name | Official Function | Notes |
+|------|-----------|-------------------|-------|
+| IO01 | RADIO_AUDIO_PIN | AU (audio out from SA868) | Yes - ADC audio input |
+| IO02 | AUDIO_ON_PIN | (not labeled in official docs) | Yes - squelch input |
+| IO03 | - | Physical PTT Button / USER BTN | No - not used by code |
+| IO04 | PMU_IRQ | PMU IRQ | Defined but not used (no interrupt handler) |
+| IO05 | GPS_RX | GNSS_RX | Yes - GPS serial RX |
+| IO06 | GPS_TX | GNSS_TX | Yes - GPS serial TX |
+| IO07 | GPS_PPS | GNSS_1PPS | Yes - GPS pulse per second |
+| IO08 | PMU_SDA | SDA (OLED & PMU) | Yes - I2C |
+| IO09 | PMU_SCL | SCL (OLED & PMU) | Yes - I2C |
+| IO10 | - | SPI_CS / SD_CS | Reserved for SD card (unused in current code) |
+| IO11 | - | SPI_MOSI / SD_MOSI | Reserved for SD card (unused in current code) |
+| IO12 | - | SPI_SCK / SD_SCK | Reserved for SD card (unused in current code) |
+| IO13 | - | SPI_MISO / SD_MISO | Reserved for SD card (unused in current code) |
+| IO14 | - | TOUCH14 / FSPI_WP / ADC2_CH3 | No |
+| IO15 | - | BAT ADC / ESP2MIC ADC | No - routing depends on MIC_CH_SEL |
+| IO16 | - | U0CTS / TX1 | No |
+| IO17 | MIC_CH_SEL_PIN | MIC_CH_SEL | Yes - audio routing switch |
+| IO18 | ESP2MIC_PIN | RADIO_MIC (audio to SA868) | Yes - LEDC audio output |
+| IO21 | - | ENCODER_OK / ROTARY_S / Rorary Encoder Button | No |
+| IO33-37 | - | Reserved for Octal SPI PSRAM | No |
+| IO38 | - | Radio RF | No |
+| IO39 | SA868_TX | RADIO_TX | Yes - UART TX to radio |
+| IO40 | PD_PIN | RADIO_PD (Power Down) | Yes - SA868 power down |
+| IO41 | PTT_PIN | RADIO_PTT (Push-to-Talk) | Yes - PTT control |
+| IO42 | - | WS2812 RGB LED (PIXEL) | No |
+| IO43 | - | CLK_OUT1 | No |
+| IO44 | - | CLK_OUT2 | No |
+| IO45 | - | NC | No |
+| IO46 | - | ENCODER_B / ROTARY_B Direction | No |
+| IO47 | - | ENCODER_A / ROTARY_A Direction | No |
+| IO48 | SA868_RX | RADIO_RX | Yes - UART RX from radio |
 
 ### Power Connectors
 
