@@ -54,17 +54,24 @@ This is the recommended hardware platform. ESP32-S3 based with integrated SA868 
 - DTMF A instant reboot toggle
 - Live status display with IP, time, RSSI
 
-### Macros (for pre/post messages)
-- `{temp}` - Temperature
-- `{conditions}` - Weather conditions
-- `{humidity}` - Humidity (BME280 only)
-- `{pressure}` - Pressure
+### Macros (for pre/post and TTS test messages)
+- `{date}` - Current date
+- `{time}` - Current time
+- `{day}` - Day of week
+- `{hour}` - Current hour
+- `{minute}` - Current minute
 - `{battery}` - Battery percentage
 - `{voltage}` - Battery voltage
 - `{freq}` - Radio frequency
-- `{txctcss}` - TX CTCSS
-- `{rxctcss}` - RX CTCSS
-- `{version}` - Firmware version
+- `{uptime}` - Uptime in minutes
+- `{ip}` - IP address
+- `{localtemp}` - Local temperature (BME280)
+- `{localhumidity}` - Local humidity (BME280)
+- `{localpressure}` - Local pressure (BME280)
+- `{sunrise}` - Sunrise time
+- `{sunset}` - Sunset time
+- `{timezone}` - Timezone
+- `{slot}` - Next recording slot
 
 ### Hardware
 - **OLED display** (SH1106 128x64): Shows IP, time, status, frequency, weather

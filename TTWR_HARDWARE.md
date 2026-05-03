@@ -100,24 +100,145 @@ adc_digi_init_config_t initConfig = {
 };
 ```
 
-## Audio Output (T-TWR)
+## AI Prompt: Implementing ADC Audio Input and LEDC PWM Audio Output for ESP32
 
-### Route: ESP32 to Radio (Playback)
-- **GPIO 17** (MIC_CH_SEL): HIGH = route ESP32 audio to SA868
-- **GPIO 18** (ESP2MIC): Audio output from ESP32 to SA868
+### The Goal
 
-### Route: Radio to ESP32 (Recording)
-- **GPIO 1**: ADC input from SA868 audio output
-- **MIC_CH_SEL** = LOW routes physical mic
+The T-TWR has two audio paths:
 
-### Audio Output Method
-LEDC (Pulse Width Modulation) at ~39kHz, 10-bit resolution.
+```
+RECORDING (Radio → ESP32):
+  SA868 Audio Out → GPIO 1 (ADC1) → ESP32 DMA → memory buffer
+
+PLAYBACK (ESP32 → Radio):
+  memory buffer → ESP32 timer ISR → GPIO 18 (LEDC PWM) → SA868 Mic In
+```
+
+### Why ADC DMA?
+
+The ESP32-S3 uses **ADC_DIGI** mode (not I2S) for recording. This is an internal ADC with DMA:
+- ADC1 channel 0 is hardwired to the audio input
+- DMA transfers samples directly to memory without CPU intervention
+- Large circular buffer (16384 bytes) absorbs interrupt latency
+- 1024 samples per interrupt at ~20kHz = ~51ms between interrupts
+
+This is more efficient than I2S for single-channel audio input.
+
+### Why LEDC PWM for Output?
+
+The SA868 expects an analog audio input on its MIC pins. Rather than using a true DAC (which ESP32-S3 doesn't have), the project uses **LEDC PWM**:
+- LEDC generates a ~39kHz carrier (well above audio band)
+- 10-bit duty cycle modulation encodes the audio signal
+- Low-pass filtering on the SA868 recovers the audio
+
+The 39kHz carrier is well above audio frequencies (~20kHz max) and well above the PWM refresh rate, so it doesn't interfere.
+
+### Ring Buffer Architecture
+
+Audio uses a producer-consumer ring buffer:
 
 ```cpp
-ledcSetup(0, 39100, 10);  // ~39kHz, 10-bit
-ledcAttachPin(ESP2MIC_PIN, 0);
-ledcWrite(0, 512);  // Center point (10-bit = 0-1023)
+typedef struct { int16_t sample; uint16_t ticks; } AudioRingEntry;
+static AudioRingEntry audioRingBuf[2048];  // 2048 entries
+
+// Producer (main task): writes samples
+void audioWrite(int16_t* data, size_t samples, uint16_t ticksPerSample) {
+  for each sample:
+    wait for space in buffer
+    audioRingBuf[writeIdx] = {sample, ticksPerSample};
+    writeIdx = (writeIdx + 1) % 2048;
+}
+
+// Consumer (timer ISR): reads samples and plays them
+void IRAM_ATTR audioTimerISR() {
+  if (writeIdx != readIdx) {
+    entry = audioRingBuf[readIdx];
+    ledcWrite(0, map(entry.sample to 0-1023 duty cycle));
+    timerAlarmWrite(timer, entry.ticks, true);  // variable sample rate!
+    readIdx = (readIdx + 1) % 2048;
+  }
+}
 ```
+
+The **variable ticks per sample** is key: TTS plays at 22050 Hz, but recorded audio plays at the calibrated ADC rate (~20224 Hz). Each ring buffer entry carries its own timing.
+
+### DC Offset and Audio Levels
+
+ADC reads around 1400-1800 at silence (not exactly 2048 due to hardware). The code:
+1. Measures DC offset at startup during calibration
+2. Subtracts DC offset from each sample during recording
+3. Centers audio around 0 before playback
+
+### Audio Routing (MIC_CH_SEL)
+
+GPIO 17 controls an analog switch:
+
+| GPIO 17 | Route | Use Case |
+|---------|-------|----------|
+| LOW | Physical mic → SA868 | Normal radio receive |
+| HIGH | ESP32 (GPIO 18) → SA868 | TTS/playback transmission |
+
+The ESP32 can either:
+- **Record** from the radio (GPIO 17 LOW, ADC reads SA868 audio)
+- **Transmit** TTS/playback (GPIO 17 HIGH, LEDC drives SA868 mic input)
+
+### Key Timing Parameters
+
+| Operation | Rate | Timer Ticks |
+|-----------|------|-------------|
+| TTS playback | 22050 Hz | 45 ticks/sample (1MHz/22050) |
+| ADC recording | ~20224 Hz | ~49 ticks/sample (measured) |
+
+Timer runs at 1 MHz (APB 80MHz / prescaler 80). Each sample specifies how many microseconds until the next sample.
+
+---
+
+## AI Prompt: Copy-Paste This for Implementing Similar Audio
+
+```
+Task: Implement audio I/O for ESP32-S3 radio project with these requirements:
+
+Recording (ADC DMA):
+- Use ESP32-S3 ADC1 in ADC_DIGI mode (not I2S) - more efficient for single-channel
+- Configure: 12-bit, ADC_ATTEN_DB_6 (range 0-1.1V), ADC_DIGI_OUTPUT_FORMAT_TYPE2
+- DMA with large circular buffer (16384 bytes) and 1024 samples per interrupt
+- At startup, calibrate: measure DC offset and true sample rate over 1 second
+- Apply DC offset correction to all samples during recording
+
+Playback (LEDC PWM):
+- ESP32-S3 has no DAC, so use LEDC PWM at ~39kHz carrier with 10-bit resolution
+- Map int16_t audio samples (-32768 to 32767) to PWM duty cycle (0-1023, centered at 512)
+- Use a hardware timer with alarm to drive sample output at precise intervals
+
+Variable-Rate Ring Buffer:
+- Create a ring buffer where each entry contains: {int16_t sample, uint16_t timerTicks}
+- Main task (producer) writes samples with associated timing
+- Timer ISR (consumer) reads samples and programs next alarm with that sample's ticks
+- This allows mixing audio at different sample rates in the same buffer
+
+Key insight:
+- TTS playback: 22050 Hz = 45 timer ticks per sample (1MHz / 22050)
+- Recorded audio: ~20224 Hz = 49 timer ticks per sample (measured)
+- Each ring buffer entry carries its own ticks so different sources can mix
+
+DC Offset Handling:
+- ADC reads ~1400-1800 at silence (not exactly 2048)
+- Measure this offset at startup with 1 second of silence
+- Subtract offset from all samples, center around 0
+
+Audio Routing (optional but useful):
+- Use a GPIO to control an analog switch for routing
+- GPIO HIGH: ESP32 audio → radio (for playback/transmit)
+- GPIO LOW: radio audio → ESP32 (for recording/receive)
+
+Reference Implementation Details:
+- Timer: hw_timer_t with 1 MHz tick (APB 80MHz / prescaler 80)
+- Timer ISR must be in IRAM_ATTR for cache consistency
+- Ring buffer size: 2048 entries provides good buffering
+- Producer should yield (vTaskDelay) if ring buffer is full, not busy-wait
+```
+
+---
 
 ## SA868 Radio Module
 

@@ -97,6 +97,32 @@ static String intToWords(int n) {
   return s;
 }
 
+// Format uptime intelligently: seconds→minutes→hours→days
+// < 60s: "X seconds"
+// < 60m: "X minutes, Y seconds"
+// < 24h: "X hours, Y minutes"
+// >= 24h: "X days, Y hours"
+static String formatUptime(uint32_t totalMs) {
+  uint32_t totalSec = totalMs / 1000;
+  uint32_t sec = totalSec % 60;
+  uint32_t totalMin = totalSec / 60;
+  uint32_t min = totalMin % 60;
+  uint32_t totalHr = totalMin / 60;
+  uint32_t hr = totalHr % 24;
+  uint32_t days = totalHr / 24;
+
+  if (days > 0) {
+    return intToWords(days) + (days == 1 ? " day, " : " days, ") + intToWords(hr) + (hr == 1 ? " hour" : " hours");
+  }
+  if (totalHr > 0) {
+    return intToWords(totalHr) + (totalHr == 1 ? " hour, " : " hours, ") + intToWords(min) + (min == 1 ? " minute" : " minutes");
+  }
+  if (totalMin > 0) {
+    return intToWords(totalMin) + (totalMin == 1 ? " minute, " : " minutes, ") + intToWords(sec) + (sec == 1 ? " second" : " seconds");
+  }
+  return intToWords(sec) + (sec == 1 ? " second" : " seconds");
+}
+
 // Format hour:minute as English words to avoid espeak number→words translation
 // e.g. 3:33 → "three thirty three PM", 6:08 → "six oh eight AM"
 static String formatTimeHM(int hour, int minute) {
@@ -272,7 +298,7 @@ String expandMacros(const String &text) {
   result.replace("{slots_total}", intToWords(MAX_SLOTS));
   // Radio/system macros
   result.replace("{freq}", formatDecimalString(radioFreq));
-  result.replace("{uptime}", intToWords(millis() / 60000) + " minutes");
+  result.replace("{uptime}", formatUptime(millis()));
   result.replace("{ip}", formatIPWords(WiFi.localIP().toString()));
   // Local weather sensor macros (BME280/BMP280)
   if (localWeather.valid) {
