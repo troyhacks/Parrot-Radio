@@ -21,6 +21,8 @@ static QueueHandle_t s_ttsQueue = nullptr;
 // TTS completion synchronization
 static EventGroupHandle_t s_ttsEvents = nullptr;
 #define TTS_DONE_BIT (1 << 0)
+static portMUX_TYPE s_ttsPendingMux = portMUX_INITIALIZER_UNLOCKED;
+static uint32_t s_ttsPendingCount = 0;
 
 // TTS output buffer
 static int16_t ttsBuffer[512];
@@ -70,7 +72,14 @@ static ESpeak espeak(ttsOut);
 
 // ==================== Helper Functions ====================
 // Convert integer to English words (avoids espeak deep recursion)
-// Note: "five" has trailing space to help espeak pronounce it correctly
+//
+// NOTE: espeak pronunciation issues with numbers:
+// - "five" standalone: espeak pronounces as "VEE" — fixed by using digit "5" instead
+// - "fifty": historically had issues in espeak TTS — if tests still show mispronunciation,
+//   consider using "5 0" (digits) as a fallback for 50-59 range
+//
+// This differs from sun.cpp intToWords which uses a "five " prefix for 50-59.
+// If "fifty" causes issues, the 50-59 special-case from sun.cpp could be applied here.
 static const char* s_ones[] = {"zero", "one", "two", "three", "four", "five ", "six", "seven", "eight", "nine",
                                 "ten", "eleven", "twelve", "thirteen", "fourteen", "fifteen", "sixteen", "seventeen", "eighteen", "nineteen"};
 static const char* s_tens[] = {"", "", "twenty", "thirty", "forty", "fifty", "sixty", "seventy", "eighty", "ninety"};
@@ -280,18 +289,31 @@ String expandMacros(const String &text) {
   {
     time_t now = time(nullptr);
     struct tm* lt = localtime(&now);
-    SolarTimes st = calculateSunTimes(weatherLat, weatherLon, lt->tm_year + 1900, lt->tm_mon + 1, lt->tm_mday);
-    if (st.valid) {
-      result.replace("{sunrise}", formatTimeHM(st.sunriseHour, st.sunriseMinute));
-      result.replace("{sunset}", formatTimeHM(st.sunsetHour, st.sunsetMinute));
-      result.replace("{civil_dawn}", formatTimeHM(st.sunriseCivilHour, st.sunriseCivilMinute));
-      result.replace("{civil_dusk}", formatTimeHM(st.sunsetCivilHour, st.sunsetCivilMinute));
-      result.replace("{nautical_dawn}", formatTimeHM(st.sunriseNauticalHour, st.sunriseNauticalMinute));
-      result.replace("{nautical_dusk}", formatTimeHM(st.sunsetNauticalHour, st.sunsetNauticalMinute));
-      result.replace("{astronomical_dawn}", formatTimeHM(st.sunriseAstronomicalHour, st.sunriseAstronomicalMinute));
-      result.replace("{astronomical_dusk}", formatTimeHM(st.sunsetAstronomicalHour, st.sunsetAstronomicalMinute));
-      result.replace("{golden_hour_morning}", formatTimeHM(st.goldenHourMorningStartHour, st.goldenHourMorningStartMinute));
-      result.replace("{golden_hour_evening}", formatTimeHM(st.goldenHourEveningEndHour, st.goldenHourEveningEndMinute));
+    if (lt) {
+      SolarTimes st = calculateSunTimes(weatherLat, weatherLon, lt->tm_year + 1900, lt->tm_mon + 1, lt->tm_mday);
+      if (st.valid) {
+        result.replace("{sunrise}", formatTimeHM(st.sunriseHour, st.sunriseMinute));
+        result.replace("{sunset}", formatTimeHM(st.sunsetHour, st.sunsetMinute));
+        result.replace("{civil_dawn}", formatTimeHM(st.sunriseCivilHour, st.sunriseCivilMinute));
+        result.replace("{civil_dusk}", formatTimeHM(st.sunsetCivilHour, st.sunsetCivilMinute));
+        result.replace("{nautical_dawn}", formatTimeHM(st.sunriseNauticalHour, st.sunriseNauticalMinute));
+        result.replace("{nautical_dusk}", formatTimeHM(st.sunsetNauticalHour, st.sunsetNauticalMinute));
+        result.replace("{astronomical_dawn}", formatTimeHM(st.sunriseAstronomicalHour, st.sunriseAstronomicalMinute));
+        result.replace("{astronomical_dusk}", formatTimeHM(st.sunsetAstronomicalHour, st.sunsetAstronomicalMinute));
+        result.replace("{golden_hour_morning}", formatTimeHM(st.goldenHourMorningStartHour, st.goldenHourMorningStartMinute));
+        result.replace("{golden_hour_evening}", formatTimeHM(st.goldenHourEveningEndHour, st.goldenHourEveningEndMinute));
+      } else {
+        result.replace("{sunrise}", "unknown");
+        result.replace("{sunset}", "unknown");
+        result.replace("{civil_dawn}", "unknown");
+        result.replace("{civil_dusk}", "unknown");
+        result.replace("{nautical_dawn}", "unknown");
+        result.replace("{nautical_dusk}", "unknown");
+        result.replace("{astronomical_dawn}", "unknown");
+        result.replace("{astronomical_dusk}", "unknown");
+        result.replace("{golden_hour_morning}", "unknown");
+        result.replace("{golden_hour_evening}", "unknown");
+      }
     } else {
       result.replace("{sunrise}", "unknown");
       result.replace("{sunset}", "unknown");
@@ -327,13 +349,6 @@ String expandMacros(const String &text) {
   return result;
 }
 
-// Phoneme pronunciations — DISABLED
-// espeak's number→words dictionary lookup can recursively traverse phoneme entries
-// causing stack overflow on the loopTask stack even for simple text.
-// All phoneme processing is disabled. Custom pronunciations should be implemented
-// by moving TTS to a dedicated FreeRTOS task with a larger stack (e.g., 64KB).
-static void applyPhonemes(String& /*text*/) {}
-
 // Text sanitization for TTS
 String sanitizeForTTS(String text) {
   // Remove wind direction arrows
@@ -358,13 +373,9 @@ String sanitizeForTTS(String text) {
   // espeak's number→words lookup, causing garbled pronunciation
   text.replace("listening", "monitoring");
 
-  // Replace "five" with "fife" — espeak mispronounces standalone "five" as "VEE"
-  // Using "fife" which espeak pronounces correctly and sounds nearly identical
-  text.replace(" five ", " fife ");
-
-  // Replace words eSpeak's minimal dictionary can't pronounce with phoneme codes
-  // DISABLED — causes stack overflow in espeak's number→words translation
-  // applyPhonemes(text);
+  // Replace standalone "five" with digit "5" — espeak mispronounces "five" as "VEE"
+  // but pronounces digit "5" correctly as "five"
+  text.replace(" five ", " 5 ");
 
   // Strip any remaining non-ASCII characters eSpeak can't pronounce
   String clean;
@@ -388,6 +399,21 @@ String sanitizeForTTS(String text) {
 
 // Forward declaration for TTS task
 static void ttsTaskFn(void* param);
+
+// Non-blocking silence generator - feeds audio buffer without blocking
+// Returns immediately if buffer is full
+static void playSilence(int durationMs) {
+  int totalSamples = (SAMPLE_RATE * durationMs) / 1000;
+  int16_t zeroBuffer[256] = {0};
+  while (totalSamples > 0) {
+    int chunkSize = (totalSamples > 256) ? 256 : totalSamples;
+    // Write to ring buffer (non-blocking - audioWrite will yield if full)
+    audioWrite(zeroBuffer, chunkSize);
+    totalSamples -= chunkSize;
+    // Yield to allow DMA to consume samples
+    vTaskDelay(1);
+  }
+}
 
 void initTTS() {
   // Register empty config file — eSpeak's LoadConfig() tries to open /mem/data/config
@@ -438,12 +464,22 @@ static void ttsTaskFn(void* param) {
     if (xQueueReceive(s_ttsQueue, textBuf, portMAX_DELAY) == pdTRUE) {
       String processed = sanitizeForTTS(String(textBuf));
       Serial.printf("TTS: %s\n", processed.c_str());
+      // Play 300ms silence to let remote radio break squelch
+      playSilence(300);
       espeak.say(processed.c_str());
       ttsOut.flush();
       // Yield after espeak returns to prevent watchdog
       vTaskDelay(1);
-      // Signal TTS completion so callers can wait before PTT off
-      if (s_ttsEvents) {
+      // Track completion; signal only when all queued TTS items are done.
+      bool allDone = false;
+      taskENTER_CRITICAL(&s_ttsPendingMux);
+      if (s_ttsPendingCount > 0) {
+        s_ttsPendingCount--;
+      }
+      allDone = (s_ttsPendingCount == 0);
+      taskEXIT_CRITICAL(&s_ttsPendingMux);
+
+      if (allDone && s_ttsEvents) {
         xEventGroupSetBits(s_ttsEvents, TTS_DONE_BIT);
       }
     }
@@ -458,14 +494,59 @@ void sayText(const char* text) {
   char textBuf[512];
   strncpy(textBuf, text, sizeof(textBuf) - 1);
   textBuf[sizeof(textBuf) - 1] = '\0';
-  xQueueSend(s_ttsQueue, textBuf, pdMS_TO_TICKS(100));
+
+  // Mark one pending utterance before queueing to avoid missing fast completions.
+  bool firstPending = false;
+  taskENTER_CRITICAL(&s_ttsPendingMux);
+  firstPending = (s_ttsPendingCount == 0);
+  s_ttsPendingCount++;
+  taskEXIT_CRITICAL(&s_ttsPendingMux);
+
+  // Clear stale done bit when transitioning idle -> pending.
+  if (firstPending && s_ttsEvents) {
+    xEventGroupClearBits(s_ttsEvents, TTS_DONE_BIT);
+  }
+
+  BaseType_t queued = xQueueSend(s_ttsQueue, textBuf, pdMS_TO_TICKS(100));
+  if (queued != pdTRUE) {
+    bool allDone = false;
+    taskENTER_CRITICAL(&s_ttsPendingMux);
+    if (s_ttsPendingCount > 0) {
+      s_ttsPendingCount--;
+    }
+    allDone = (s_ttsPendingCount == 0);
+    taskEXIT_CRITICAL(&s_ttsPendingMux);
+
+    // Unblock waiters if queueing failed and nothing remains pending.
+    if (allDone && s_ttsEvents) {
+      xEventGroupSetBits(s_ttsEvents, TTS_DONE_BIT);
+    }
+    Serial.println("WARNING: TTS queue full, dropped message");
+  }
 }
 
 void waitForTTSDone() {
   if (s_ttsEvents == nullptr) return;
-  // Wait for TTS task to signal completion
-  xEventGroupClearBits(s_ttsEvents, TTS_DONE_BIT);
-  xEventGroupWaitBits(s_ttsEvents, TTS_DONE_BIT, pdTRUE, pdFALSE, portMAX_DELAY);
+  // Fast path: nothing pending.
+  taskENTER_CRITICAL(&s_ttsPendingMux);
+  bool pending = (s_ttsPendingCount > 0);
+  taskEXIT_CRITICAL(&s_ttsPendingMux);
+  if (!pending) return;
+
+  // Wait until all currently pending TTS messages are completed.
+  const TickType_t slice = pdMS_TO_TICKS(1000);
+  const TickType_t timeout = pdMS_TO_TICKS(30000);
+  TickType_t waited = 0;
+  while (waited < timeout) {
+    xEventGroupWaitBits(s_ttsEvents, TTS_DONE_BIT, pdTRUE, pdFALSE, slice);
+
+    taskENTER_CRITICAL(&s_ttsPendingMux);
+    pending = (s_ttsPendingCount > 0);
+    taskEXIT_CRITICAL(&s_ttsPendingMux);
+    if (!pending) return;
+    waited += slice;
+  }
+  Serial.println("WARNING: waitForTTSDone timeout");
 }
 
 void playTone(int frequency, int duration) {
@@ -489,10 +570,6 @@ void playTone(int frequency, int duration) {
   if (bufIndex > 0) {
     audioWrite(buffer, bufIndex);
   }
-}
-
-void playVoiceMessage(const char* message) {
-  sayText(message);
 }
 
 void speakPreMessage() {

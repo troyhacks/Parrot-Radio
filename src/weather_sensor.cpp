@@ -1,14 +1,15 @@
 #include "weather_sensor.h"
 #include <Wire.h>
 
-// BMP280 registers (no humidity sensor)
+// BMP280/BME280 registers
 #define BMP280_ADDR 0x76
 #define BMP280_REG_ID 0xD0
 #define BMP280_REG_CTRL_MEAS 0xF4
 #define BMP280_REG_CONFIG 0xF5
 #define BMP280_REG_DATA 0xF7
+#define BMP280_REG_CTRL_HUM 0xF2  // BME280 humidity control
 
-// BMP280 compensation parameters
+// Compensation parameters
 static uint16_t dig_T1;
 static int16_t dig_T2;
 static int16_t dig_T3;
@@ -21,8 +22,16 @@ static int16_t dig_P6;
 static int16_t dig_P7;
 static int16_t dig_P8;
 static int16_t dig_P9;
+// BME280 humidity compensation (BMP280 doesn't have these)
+static int16_t dig_H1;
+static int16_t dig_H2;
+static int16_t dig_H3;
+static int16_t dig_H4;
+static int16_t dig_H5;
+static int16_t dig_H6;
 
 static bool sensorFound = false;
+static bool isBME280 = false;  // true = BME280 (has humidity), false = BMP280
 BME280Data localWeather = {0, 0, 0, false};
 
 bool weatherSensorFound() {
@@ -104,6 +113,16 @@ static void readCompensationParams() {
   dig_P7 = readRegister16S(0x9A);
   dig_P8 = readRegister16S(0x9C);
   dig_P9 = readRegister16S(0x9E);
+  // BME280 humidity compensation parameters (BMP280 ignores these)
+  dig_H1 = (int16_t)readRegister(0xA1);  // unsigned
+  dig_H2 = readRegister16S(0xE1);
+  dig_H3 = readRegister(0xE3);
+  // dig_H4 and dig_H5 are split across registers
+  int16_t dig_H4_tmp = readRegister16S(0xE4);
+  int16_t dig_H5_tmp = readRegister16S(0xE6);
+  dig_H4 = (int16_t)((dig_H4_tmp & 0x0FFF) | ((readRegister(0xE5) & 0x0F) << 12));
+  dig_H5 = (int16_t)((dig_H5_tmp >> 4) | ((readRegister(0xE5) & 0xF0) << 8));
+  dig_H6 = (int16_t)(int8_t)readRegister(0xE7);
 }
 
 void initWeatherSensor() {
@@ -130,6 +149,7 @@ void initWeatherSensor() {
   }
 
   Serial.printf("Environmental sensor found (ID=0x%02X)\n", id);
+  isBME280 = (id == 0x60);
 
   // Read compensation parameters
   readCompensationParams();
@@ -137,6 +157,10 @@ void initWeatherSensor() {
   // Configure: forced mode, 1x oversampling for temp/pressure
   writeRegister(BMP280_REG_CTRL_MEAS, (1 << 5) | (1 << 2) | 0x01);
   writeRegister(BMP280_REG_CONFIG, (5 << 5));
+  // BME280 needs ctrl_hum set for humidity readings
+  if (isBME280) {
+    writeRegister(BMP280_REG_CTRL_HUM, 0x01);  // 1x oversampling
+  }
 
   sensorFound = true;
   Serial.println("Environmental sensor initialized");
@@ -164,6 +188,22 @@ static uint32_t compensatePressure(int32_t adc_P, int32_t t_fine) {
   return (uint32_t)p;
 }
 
+// BME280 humidity compensation (BMP280 returns 0)
+static int32_t compensateHumidity(int32_t adc_H, int32_t t_fine) {
+  if (!isBME280) return 0;
+  int32_t var1 = (int32_t)t_fine - 76800;
+  int32_t var2 = (int32_t)((adc_H * 4) << 14);
+  var2 = (var2 + ((int32_t)dig_H4 << 20)) + ((int32_t)dig_H5 * var1);
+  int32_t var3 = (int32_t)dig_H2 * var1;
+  int32_t var4 = (var3 >> 12);
+  int32_t var5 = (((var2 - var4) >> 10) * ((int32_t)dig_H6)) >> 11;
+  int32_t var6 = (((var2 >> 11) - 3) * ((int32_t)dig_H3)) >> 12;
+  int32_t var7 = ((var5 + var6) >> 10) + 32768;
+  int32_t compensated = (var7 * ((int32_t)dig_H1)) >> 12;
+  compensated = (int32_t)(compensated + 2) >> 2;
+  return (int32_t)(((compensated - 128) * 100) >> 10);  // percent * 1024
+}
+
 void readWeatherSensor(BME280Data* data) {
   if (!sensorFound) {
     data->valid = false;
@@ -174,11 +214,11 @@ void readWeatherSensor(BME280Data* data) {
   writeRegister(BMP280_REG_CTRL_MEAS, (1 << 5) | (1 << 2) | 0x01);
   delay(10);
 
-  // Read all data: pressure[3], temp[3] (no humidity in BMP280)
+  // Read pressure and temperature (8 bytes total)
   Wire.beginTransmission(BMP280_ADDR);
   Wire.write(BMP280_REG_DATA);
   Wire.endTransmission();
-  Wire.requestFrom((uint8_t)BMP280_ADDR, (uint8_t)6);
+  Wire.requestFrom((uint8_t)BMP280_ADDR, (uint8_t)8);
 
   uint8_t dataPress_msb = Wire.read();
   uint8_t dataPress_lsb = Wire.read();
@@ -186,14 +226,17 @@ void readWeatherSensor(BME280Data* data) {
   uint8_t dataTemp_msb = Wire.read();
   uint8_t dataTemp_lsb = Wire.read();
   uint8_t dataTemp_xlsb = Wire.read();
+  uint8_t dataHum_msb = Wire.read();   // BME280 humidity MSB
+  uint8_t dataHum_lsb = Wire.read();    // BME280 humidity LSB
 
   int32_t adc_P = ((int32_t)dataPress_msb << 12) | ((int32_t)dataPress_lsb << 4) | ((int32_t)(dataPress_xlsb >> 4) & 0x0F);
   int32_t adc_T = ((int32_t)dataTemp_msb << 12) | ((int32_t)dataTemp_lsb << 4) | ((int32_t)(dataTemp_xlsb >> 4) & 0x0F);
+  int32_t adc_H = ((int32_t)dataHum_msb << 8) | dataHum_lsb;
 
   int32_t t_fine = compensateTemperature(adc_T);
   data->temperature = (float)(t_fine / 512.0f);
   data->pressure = (float)compensatePressure(adc_P, t_fine) / 256.0f;
-  data->humidity = 0;  // BMP280 has no humidity sensor
+  data->humidity = isBME280 ? ((float)compensateHumidity(adc_H, t_fine) / 1024.0f) : 0.0f;
   data->valid = true;
 
   // Also update global localWeather for macro access

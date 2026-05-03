@@ -81,7 +81,8 @@ void handleRoot() {
   html += ".status{padding:10px;margin:10px 0;border-radius:5px;}";
   html += ".connected{background:#d4edda;}.disconnected{background:#f8d7da;}";
   html += ".btn{background:#007bff;color:white;border:none;padding:10px;cursor:pointer;margin:5px 0;}";
-  html += ".coords{display:flex;gap:10px;}.coords input{width:48%;}</style></head>";
+  html += ".coords{display:flex;gap:10px;}.coords input{width:48%;}";
+  html += ".checkbox-item{display:flex;align-items:center;gap:8px;margin:5px 0;}.checkbox-item input{width:auto;margin:0;}</style></head>";
   html += "<body><h1>Radio Parrot</h1>";
 
   // Status
@@ -113,18 +114,18 @@ void handleRoot() {
   html += ctcssDropdown("rxctcss", radioRxCTCSS);
   html += "<label>Squelch (0-8):</label><input name='squelch' type='number' min='0' max='8' value='" + String(radioSquelch) + "'>";
   html += "<label>SA868 Volume (0-8):</label><input name='radiovol' type='number' min='0' max='8' value='" + String(radioVolume) + "'>";
-  html += "<label>SA868 Filter: Bandpass</label><input name='filterbp' type='checkbox' value='1'";
+  html += "<div class='checkbox-item'><input name='filterbp' type='checkbox' value='1'";
   html += radioFilterBP ? " checked" : "";
-  html += ">";
-  html += "<label>SA868 Filter: De-noise</label><input name='filterden' type='checkbox' value='1'";
+  html += "><label>SA868 Filter: Bandpass</label></div>";
+  html += "<div class='checkbox-item'><input name='filterden' type='checkbox' value='1'";
   html += radioFilterDENoise ? " checked" : "";
-  html += ">";
-  html += "<label>SA868 Filter: De-emphasis</label><input name='filterder' type='checkbox' value='1'";
+  html += "><label>SA868 Filter: De-noise</label></div>";
+  html += "<div class='checkbox-item'><input name='filterder' type='checkbox' value='1'";
   html += radioFilterDER ? " checked" : "";
-  html += ">";
-  html += "<label>25 kHz Channel Width (uncheck for 12.5 kHz)</label><input name='bandwidth25' type='checkbox' value='1'";
+  html += "><label>SA868 Filter: De-emphasis</label></div>";
+  html += "<div class='checkbox-item'><input name='bandwidth25' type='checkbox' value='1'";
   html += radioBandwidth25 ? " checked" : "";
-  html += ">";
+  html += "><label>25 kHz Channel Width (uncheck for 12.5 kHz)</label></div>";
 
   // Audio settings
   html += "<h2>Audio Settings</h2>";
@@ -389,10 +390,11 @@ void handleSave() {
 
 void handleStatus() {
   String json = "{";
-  json += "\"wifi\":\"" + String((WiFi.status() == WL_CONNECTED) ? "connected" : "disconnected") + "\",";
+  bool connected = (WiFi.status() == WL_CONNECTED);
+  json += "\"wifi\":\"" + String(connected ? "connected" : "disconnected") + "\",";
   json += "\"ip\":\"" + WiFi.localIP().toString() + "\",";
   json += "\"ssid\":\"" + wifiSSID + "\",";
-  json += "\"rssi\":" + String(WiFi.RSSI()) + ",";
+  json += "\"rssi\":" + String(connected ? WiFi.RSSI() : 0) + ",";
   json += "\"ap_mode\":" + String(apMode ? "true" : "false") + ",";
   struct tm t;
   if (getLocalTime(&t, 0)) {

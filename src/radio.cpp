@@ -150,11 +150,10 @@ void playSlot(int slotIndex) {
 
   if (slots[slotIndex].sampleCount == 0 || !slots[slotIndex].buffer) {
     Serial.printf("Slot %d is empty\n", slotIndex + 1);
-    setAudioRoutingToRadio(true);
+    // Speaker is muted, so routing doesn't matter for feedback prevention
     setSpeakerMute(true);
     sayText("no recording");
     setSpeakerMute(false);
-    setAudioRoutingToRadio(false);
   } else {
     Serial.printf("Playing slot %d (%d samples)\n", slotIndex + 1, slots[slotIndex].sampleCount);
     setAudioRoutingToRadio(true);
@@ -322,7 +321,8 @@ static volatile uint16_t audioRingWriteIdx = 0;
 static volatile uint16_t audioRingReadIdx = 0;
 static volatile bool audioTimerRunning = false;
 static hw_timer_t* audioTimer = nullptr;
-static portMUX_TYPE audioTimerMux = portMUX_INITIALIZER_UNLOCKED;
+// Overflow counter for audio ring buffer
+static volatile uint32_t audioRingOverflowCount = 0;
 
 // Measured DC offset of ADC (calibrated at startup)
 static uint16_t adcCenter = 2048;  // Default; real value calibrated in initAudioInput
@@ -361,6 +361,7 @@ void audioWrite(int16_t* data, size_t samples, uint16_t ticksPerSample) {
   for (size_t i = 0; i < samples; i++) {
     uint16_t next = (audioRingWriteIdx + 1) % AUDIO_RING_BUF_SIZE;
     while (next == audioRingReadIdx) {
+      audioRingOverflowCount++;
       vTaskDelay(pdMS_TO_TICKS(1)); // Let FreeRTOS breathe instead of busy-waiting
     }
     audioRingBuf[audioRingWriteIdx] = (AudioRingEntry){data[i], ticksPerSample};
@@ -848,32 +849,32 @@ void recordAudioSamples() {
 void generateQualityFeedback() {
   if (peakRSSI > 140) {
     playTone(1200, 200);
-    playVoiceMessage("excellent signal");
+    sayText("excellent signal");
   } else if (peakRSSI > 120) {
     playTone(1000, 200);
     delay(100);
     playTone(1000, 200);
-    playVoiceMessage("good signal");
+    sayText("good signal");
   } else if (peakRSSI > 100) {
     playTone(800, 200);
     delay(100);
     playTone(800, 200);
     delay(100);
     playTone(800, 200);
-    playVoiceMessage("fair signal");
+    sayText("fair signal");
   } else if (peakRSSI > 0) {
     playTone(400, 500);
-    playVoiceMessage("weak signal, check antenna");
+    sayText("weak signal, check antenna");
   } else {
     playTone(300, 300);
     delay(100);
     playTone(300, 300);
-    playVoiceMessage("no signal");
+    sayText("no signal");
   }
 
   if (clipCount > CLIP_COUNT_WARN) {
     delay(300);
-    playVoiceMessage("audio clipping, reduce volume");
+    sayText("audio clipping, reduce volume");
   }
 }
 
@@ -912,31 +913,19 @@ void playbackWithFeedback() {
   }
   Serial.println("playbackWithFeedback: audio loop done");
 
-  // === TESTING: play radioTestAudio instead of recorded audio ===
-  // Uncomment below to test with known-good audio instead of your recording
-  // int16_t buffer[256];
-  // for (int i = 0; i < RADIO_TEST_SAMPLES; i += 256) {
-  //   int chunkSize = min(256, RADIO_TEST_SAMPLES - i);
-  //   for (int j = 0; j < chunkSize; j++) {
-  //     buffer[j] = (pgm_read_word(&radioTestAudio[i + j]) * playbackVolumePercent) / 100;
-  //   }
-  //   audioWrite(buffer, chunkSize);
-  // }
-  // Serial.println("playbackWithFeedback: radio test audio loop done");
-  // === END TESTING ===
-
 #ifdef BOARD_TTWR
-  drainAudio();  // Wait for ring buffer to empty before switching routing
+  drainAudio();  // Wait for ring buffer to empty before muting
 #endif
 
   delay(500);  // Gap before feedback tones
 
 #ifdef BOARD_TTWR
-  // Mute speaker so mic doesn't pick up TTS and create feedback
+  // Mute speaker so mic can't pick up TTS - routing can stay ESP32→SA868
+  // because muted speaker produces no audio for mic to pick up
   setSpeakerMute(true);
 #endif
 
-  // Generate quality feedback
+  // Generate quality feedback (muted - but routing stays ESP32→SA868 for TX)
   generateQualityFeedback();
 
   speakPostMessage();
@@ -951,20 +940,14 @@ void playbackWithFeedback() {
   // Final drain: ensure ring buffer is empty before PTT off
   drainAudio();
 
-#ifdef BOARD_TTWR
-  // Unmute speaker first (before switching routing)
-  setSpeakerMute(false);
-#endif
-
   delay(300);  // Final tail
 
-  // Release PTT first (before switching to mic to avoid feedback)
+  // Release PTT
   pttOff();
 
 #ifdef BOARD_TTWR
-  // Route audio back to physical mic on T-TWR (after PTT is off, no feedback possible)
-  Serial.println("playbackWithFeedback: setting routing to MIC");
-  setAudioRoutingToRadio(false);
+  // Unmute speaker after PTT is off
+  setSpeakerMute(false);
 #endif
 
   Serial.println("Playback complete!");

@@ -42,7 +42,7 @@ static void minsToTime(int mins, int& hour, int& minute) {
 // Number to English words (for TTS pronunciation)
 static const char* s_ones[] = {"zero", "one", "two", "three", "four", "five ", "six", "seven", "eight", "nine",
                                 "ten", "eleven", "twelve", "thirteen", "fourteen", "fifteen", "sixteen", "seventeen", "eighteen", "nineteen"};
-static const char* s_tens[] = {"", "", "twenty", "thirty", "forty", "fifty", "sixty", "seventy", "eighty", "ninety"};
+static const char* s_tens[] = {"", "", "twenty", "thirty", "forty", "50", "sixty", "seventy", "eighty", "ninety"};
 
 static String intToWords(int n) {
   if (n == 0) return "zero";
@@ -119,12 +119,25 @@ SolarTimes calculateSunTimes(float latitude, float longitude, int year, int mont
   minsToTime(astroSetMins, result.sunsetAstronomicalHour, result.sunsetAstronomicalMinute);
 
   // Golden hour - sun at 6° above horizon = 84° zenith
-  // The library doesn't have golden hour, so we use sunset - 1 hour approximation
-  // or we can compute it manually
-  result.goldenHourEveningEndHour = -1;
-  result.goldenHourEveningEndMinute = -1;
-  result.goldenHourMorningStartHour = -1;
-  result.goldenHourMorningStartMinute = -1;
+  // Morning golden hour: sunrise to sun at 6° altitude
+  // Evening golden hour: sun at 6° altitude to sunset
+  SunSet sunCalcGH;
+  sunCalcGH.setPosition(latitude, longitude, tzOffsetHours);
+  sunCalcGH.setCurrentDate(year, month, day);
+  int morningEndMins = sunCalcGH.calcCustomSunrise(84);  // When sun hits 6° altitude
+  SunSet sunCalcEH;
+  sunCalcEH.setPosition(latitude, longitude, tzOffsetHours);
+  sunCalcEH.setCurrentDate(year, month, day);
+  int eveningStartMins = sunCalcEH.calcCustomSunset(84);  // When sun drops to 6° altitude
+
+  // Morning golden hour: starts at sunrise, ends when sun hits 6°
+  result.goldenHourMorningStartHour = result.sunriseHour;
+  result.goldenHourMorningStartMinute = result.sunriseMinute;
+  minsToTime(morningEndMins, result.goldenHourMorningEndHour, result.goldenHourMorningEndMinute);
+  // Evening golden hour: starts when sun drops to 6°, ends at sunset
+  minsToTime(eveningStartMins, result.goldenHourEveningStartHour, result.goldenHourEveningStartMinute);
+  result.goldenHourEveningEndHour = result.sunsetHour;
+  result.goldenHourEveningEndMinute = result.sunsetMinute;
 
   result.valid = (riseMins >= 0 && setMins >= 0);
   lastResult = result;
@@ -166,6 +179,7 @@ bool isDaytime() {
 
   time_t now = time(nullptr);
   struct tm* t = localtime(&now);
+  if (!t) return false;
   int hour = t->tm_hour;
   int minute = t->tm_min;
 
@@ -181,23 +195,32 @@ String getNextGoldenHourWords() {
 
   time_t now = time(nullptr);
   struct tm* t = localtime(&now);
+  if (!t) return "";
   int currentMins = t->tm_hour * 60 + t->tm_min;
 
-  int morningMins = lastResult.goldenHourMorningStartHour * 60 + lastResult.goldenHourMorningStartMinute;
-  int eveningMins = lastResult.goldenHourEveningEndHour * 60 + lastResult.goldenHourEveningEndMinute;
+  int morningStartMins = lastResult.goldenHourMorningStartHour * 60 + lastResult.goldenHourMorningStartMinute;
+  int morningEndMins = lastResult.goldenHourMorningEndHour * 60 + lastResult.goldenHourMorningEndMinute;
+  int eveningStartMins = lastResult.goldenHourEveningStartHour * 60 + lastResult.goldenHourEveningStartMinute;
 
   // Determine which golden hour is next
   int ghH = -1, ghM = -1;
   String ghType;
 
-  if (currentMins < morningMins) {
+  if (currentMins < morningStartMins) {
+    // Before morning GH - announce morning GH at sunrise
     ghType = "morning golden hour at ";
     ghH = lastResult.goldenHourMorningStartHour;
     ghM = lastResult.goldenHourMorningStartMinute;
-  } else if (currentMins < eveningMins) {
+  } else if (currentMins < morningEndMins) {
+    // During morning GH - announce evening GH
     ghType = "evening golden hour at ";
-    ghH = lastResult.goldenHourEveningEndHour;
-    ghM = lastResult.goldenHourEveningEndMinute;
+    ghH = lastResult.goldenHourEveningStartHour;
+    ghM = lastResult.goldenHourEveningStartMinute;
+  } else if (currentMins < eveningStartMins) {
+    // Between morning and evening GH - announce evening GH
+    ghType = "evening golden hour at ";
+    ghH = lastResult.goldenHourEveningStartHour;
+    ghM = lastResult.goldenHourEveningStartMinute;
   } else {
     // Both passed today, return empty (or could wrap to tomorrow)
     return "";

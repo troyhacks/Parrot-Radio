@@ -285,7 +285,6 @@ void setup() {
 void loop() {
   // Update GPS data
   updateGPS();
-  updateTimezoneFromGPS();  // Keep timezone updated from GPS coordinates
   displaySetGPS(gpsHasFix() ? "GPS OK" : "GPS ..");
 
   static bool wasReceiving = false;
@@ -336,9 +335,8 @@ void loop() {
       displayShowState();  // Show full display with IP/time
       // DTMF # - speak configurable message with macro expansion
       String expanded = expandMacros(dtmfHashMessage);
-      pttOn();
-      delay(600);
       setAudioRoutingToRadio(true);
+      pttOn();
       setSpeakerMute(true);
       sayText(expanded.c_str());
       waitForTTSDone();
@@ -368,29 +366,33 @@ void loop() {
       displaySetState(DisplayState::TTS);
       displaySetStateText("SUN");
       displayShowState();
-      pttOn();
-      delay(600);
       setAudioRoutingToRadio(true);
+      pttOn();
       setSpeakerMute(true);
       {
         time_t now = time(nullptr);
         struct tm* t = localtime(&now);
-        SolarTimes st = calculateSunTimes(weatherLat, weatherLon, t->tm_year + 1900, t->tm_mon + 1, t->tm_mday);
         char buf[512];
-        if (st.valid) {
-          String nightSkyDusk = getAstronomicalDuskWords();
-          String nextGH = getNextGoldenHourWords();
-          if (nextGH.length() > 0) {
-            snprintf(buf, sizeof(buf),
-              "Sunrise at %s, sunset at %s. Night sky dusk at %s. %s.",
-              getSunriseWords().c_str(), getSunsetWords().c_str(), nightSkyDusk.c_str(), nextGH.c_str());
+        if (t) {
+          SolarTimes st = calculateSunTimes(weatherLat, weatherLon, t->tm_year + 1900, t->tm_mon + 1, t->tm_mday);
+          if (st.valid) {
+            String nightSkyDusk = getAstronomicalDuskWords();
+            String nextGH = getNextGoldenHourWords();
+            if (nextGH.length() > 0) {
+              snprintf(buf, sizeof(buf),
+                "Sunrise at %s, sunset at %s. Night sky dusk at %s. %s.",
+                getSunriseWords().c_str(), getSunsetWords().c_str(), nightSkyDusk.c_str(), nextGH.c_str());
+            } else {
+              snprintf(buf, sizeof(buf),
+                "Sunrise at %s, sunset at %s. Night sky dusk at %s. No golden hour today.",
+                getSunriseWords().c_str(), getSunsetWords().c_str(), nightSkyDusk.c_str());
+            }
           } else {
             snprintf(buf, sizeof(buf),
-              "Sunrise at %s, sunset at %s. Night sky dusk at %s. No golden hour today.",
-              getSunriseWords().c_str(), getSunsetWords().c_str(), nightSkyDusk.c_str());
+              "Unable to calculate sun times for current location");
           }
         } else {
-          snprintf(buf, sizeof(buf), "Unable to calculate sun times for current location");
+          snprintf(buf, sizeof(buf), "Current time unavailable");
         }
         sayText(buf);
       }
@@ -403,15 +405,18 @@ void loop() {
       displaySetState(DisplayState::TTS);
       displaySetStateText("DATE");
       displayShowState();
-      pttOn();
-      delay(600);
       setAudioRoutingToRadio(true);
+      pttOn();
       setSpeakerMute(true);
       {
         char dateBuf[64];
         time_t now = time(nullptr);
         struct tm* tm_info = localtime(&now);
-        strftime(dateBuf, sizeof(dateBuf), "Today is %A, %B %d, %Y", tm_info);
+        if (tm_info) {
+          strftime(dateBuf, sizeof(dateBuf), "Today is %A, %B %d, %Y", tm_info);
+        } else {
+          snprintf(dateBuf, sizeof(dateBuf), "Current date unavailable");
+        }
         sayText(dateBuf);
       }
       waitForTTSDone();
@@ -423,15 +428,14 @@ void loop() {
       displaySetState(DisplayState::TTS);
       displaySetStateText("TIME");
       displayShowState();
-      pttOn();
-      delay(600);
       setAudioRoutingToRadio(true);
+      pttOn();
       setSpeakerMute(true);
       {
         // Simple number-to-words for time
         static const char* ones[] = {"zero", "one", "two", "three", "four", "five ", "six", "seven", "eight", "nine",
                                      "ten", "eleven", "twelve", "thirteen", "fourteen", "fifteen", "sixteen", "seventeen", "eighteen", "nineteen"};
-        static const char* tens[] = {"", "", "twenty", "thirty", "forty", "fifty", "sixty", "seventy", "eighty", "ninety"};
+        static const char* tens[] = {"", "", "twenty", "thirty", "forty", "50", "sixty", "seventy", "eighty", "ninety"};
         auto numToWords = [&](int n) -> String {
           if (n == 0) return "zero";
           if (n < 20) return String(ones[n]);
@@ -454,20 +458,24 @@ void loop() {
 
         time_t now = time(nullptr);
         struct tm* tm_info = localtime(&now);
-        int h = tm_info->tm_hour;
-        int m = tm_info->tm_min;
-        int h12 = h % 12;
-        if (h12 == 0) h12 = 12;
-        String timeWords = "The current time is ";
-        if (m == 0) {
-          timeWords += numToWords(h12);
-        } else if (m < 10) {
-          timeWords += numToWords(h12) + " oh " + numToWords(m);
+        if (!tm_info) {
+          sayText("Current time unavailable");
         } else {
-          timeWords += numToWords(h12) + " " + numToWords(m);
+          int h = tm_info->tm_hour;
+          int m = tm_info->tm_min;
+          int h12 = h % 12;
+          if (h12 == 0) h12 = 12;
+          String timeWords = "The current time is ";
+          if (m == 0) {
+            timeWords += numToWords(h12);
+          } else if (m < 10) {
+            timeWords += numToWords(h12) + " oh " + numToWords(m);
+          } else {
+            timeWords += numToWords(h12) + " " + numToWords(m);
+          }
+          timeWords += h < 12 ? " AM" : " PM";
+          sayText(timeWords.c_str());
         }
-        timeWords += h < 12 ? " AM" : " PM";
-        sayText(timeWords.c_str());
       }
       waitForTTSDone();
       setSpeakerMute(false);
@@ -537,9 +545,8 @@ void loop() {
       displaySetStateText("TTS MSG");
       displayShowState();
       String expanded = expandMacros(dtmfHashMessage);
-      pttOn();
-      delay(600);
       setAudioRoutingToRadio(true);
+      pttOn();
       setSpeakerMute(true);
       sayText(expanded.c_str());
       waitForTTSDone();
@@ -567,29 +574,33 @@ void loop() {
       displaySetState(DisplayState::TTS);
       displaySetStateText("SUN");
       displayShowState();
-      pttOn();
-      delay(600);
       setAudioRoutingToRadio(true);
+      pttOn();
       setSpeakerMute(true);
       {
         time_t now = time(nullptr);
         struct tm* t = localtime(&now);
-        SolarTimes st = calculateSunTimes(weatherLat, weatherLon, t->tm_year + 1900, t->tm_mon + 1, t->tm_mday);
         char buf[512];
-        if (st.valid) {
-          String nightSkyDusk = getAstronomicalDuskWords();
-          String nextGH = getNextGoldenHourWords();
-          if (nextGH.length() > 0) {
-            snprintf(buf, sizeof(buf),
-              "Sunrise at %s, sunset at %s. Night sky dusk at %s. %s.",
-              getSunriseWords().c_str(), getSunsetWords().c_str(), nightSkyDusk.c_str(), nextGH.c_str());
+        if (t) {
+          SolarTimes st = calculateSunTimes(weatherLat, weatherLon, t->tm_year + 1900, t->tm_mon + 1, t->tm_mday);
+          if (st.valid) {
+            String nightSkyDusk = getAstronomicalDuskWords();
+            String nextGH = getNextGoldenHourWords();
+            if (nextGH.length() > 0) {
+              snprintf(buf, sizeof(buf),
+                "Sunrise at %s, sunset at %s. Night sky dusk at %s. %s.",
+                getSunriseWords().c_str(), getSunsetWords().c_str(), nightSkyDusk.c_str(), nextGH.c_str());
+            } else {
+              snprintf(buf, sizeof(buf),
+                "Sunrise at %s, sunset at %s. Night sky dusk at %s. No golden hour today.",
+                getSunriseWords().c_str(), getSunsetWords().c_str(), nightSkyDusk.c_str());
+            }
           } else {
             snprintf(buf, sizeof(buf),
-              "Sunrise at %s, sunset at %s. Night sky dusk at %s. No golden hour today.",
-              getSunriseWords().c_str(), getSunsetWords().c_str(), nightSkyDusk.c_str());
+              "Unable to calculate sun times for current location");
           }
         } else {
-          snprintf(buf, sizeof(buf), "Unable to calculate sun times for current location");
+          snprintf(buf, sizeof(buf), "Current time unavailable");
         }
         sayText(buf);
       }
@@ -601,15 +612,18 @@ void loop() {
       displaySetState(DisplayState::TTS);
       displaySetStateText("DATE");
       displayShowState();
-      pttOn();
-      delay(600);
       setAudioRoutingToRadio(true);
+      pttOn();
       setSpeakerMute(true);
       {
         char dateBuf[64];
         time_t now = time(nullptr);
         struct tm* tm_info = localtime(&now);
-        strftime(dateBuf, sizeof(dateBuf), "Today is %A, %B %d, %Y", tm_info);
+        if (tm_info) {
+          strftime(dateBuf, sizeof(dateBuf), "Today is %A, %B %d, %Y", tm_info);
+        } else {
+          snprintf(dateBuf, sizeof(dateBuf), "Current date unavailable");
+        }
         sayText(dateBuf);
       }
       waitForTTSDone();
@@ -620,15 +634,18 @@ void loop() {
       displaySetState(DisplayState::TTS);
       displaySetStateText("TIME");
       displayShowState();
-      pttOn();
-      delay(600);
       setAudioRoutingToRadio(true);
+      pttOn();
       setSpeakerMute(true);
       {
         char timeBuf[64];
         time_t now = time(nullptr);
         struct tm* tm_info = localtime(&now);
-        strftime(timeBuf, sizeof(timeBuf), "The current time is %I:%M %p", tm_info);
+        if (tm_info) {
+          strftime(timeBuf, sizeof(timeBuf), "The current time is %I:%M %p", tm_info);
+        } else {
+          snprintf(timeBuf, sizeof(timeBuf), "Current time unavailable");
+        }
         sayText(timeBuf);
       }
       waitForTTSDone();
@@ -688,7 +705,7 @@ void loop() {
     }
     float voltage = (sum / 10) / 1000.0 * VBAT_DIVIDER;
     if (voltage > VBAT_LIPO_MIN && voltage < VBAT_LIPO_MAX) {
-      int percent = constrain((int)((voltage - VBAT_LIPO_MIN) / (4.2 - VBAT_LIPO_MIN) * 100), 0, 100);
+      int percent = constrain((int)((voltage - VBAT_LIPO_MIN) / (VBAT_LIPO_MAX - VBAT_LIPO_MIN) * 100), 0, 100);
       lastBatteryV = voltage;
       lastBatteryPct = percent;
       Serial.printf("Battery: %.2fV (%d%%)\n", voltage, percent);
@@ -756,7 +773,9 @@ void loop() {
     if (weatherLat != 0 && weatherLon != 0) {
       time_t now = time(nullptr);
       struct tm* t = localtime(&now);
-      calculateSunTimes(weatherLat, weatherLon, t->tm_year + 1900, t->tm_mon + 1, t->tm_mday);
+      if (t) {
+        calculateSunTimes(weatherLat, weatherLon, t->tm_year + 1900, t->tm_mon + 1, t->tm_mday);
+      }
     }
 
     // Update local weather sensor reading
