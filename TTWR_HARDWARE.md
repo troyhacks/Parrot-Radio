@@ -375,7 +375,7 @@ Display states with custom status text:
 | IO16 | - | U0CTS / TX1 | No |
 | IO17 | MIC_CH_SEL_PIN | MIC_CH_SEL | Yes - audio routing switch |
 | IO18 | ESP2MIC_PIN | RADIO_MIC (audio to SA868) | Yes - LEDC audio output |
-| IO21 | - | ENCODER_OK / ROTARY_S / Rorary Encoder Button | No |
+| IO21 | - | ENCODER_OK / ROTARY_S / Rotary Encoder Button | No |
 | IO33-37 | - | Reserved for Octal SPI PSRAM | No |
 | IO38 | - | Radio RF | No |
 | IO39 | SA868_TX | RADIO_TX | Yes - UART TX to radio |
@@ -388,23 +388,3 @@ Display states with custom status text:
 | IO46 | - | ENCODER_B / ROTARY_B Direction | No |
 | IO47 | - | ENCODER_A / ROTARY_A Direction | No |
 | IO48 | SA868_RX | RADIO_RX | Yes - UART RX from radio |
-
-### Power Connectors
-
-| Connector | Function |
-|-----------|----------|
-| 2-pin JST 5V IN | External 5V input |
-| 2-pin Battery | LiPo battery connector |
-| +B | Battery voltage sense |
-| VBUS | USB 5V sense |
-| 3V3 | 3.3V rail |
-| 5V | 5V rail |
-
-### Other
-
-| Connector | Function |
-|-----------|----------|
-| SMA | Antenna connector |
-| 2-pin Speaker/Buzzer | Speaker or buzzer output |
-| 4-pin GPS | GPS module connector |
-| 1-pin 2PPS | GPS pulse per second |
