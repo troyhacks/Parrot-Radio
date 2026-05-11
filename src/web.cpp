@@ -130,16 +130,16 @@ void handleRoot() {
   html += "<label>SA868 Volume (0-8):</label><input name='radiovol' type='number' min='0' max='8' value='" + String(radioVolume) + "'>";
   html += "<div class='checkbox-item'><input name='filterbp' type='checkbox' value='1'";
   html += radioFilterBP ? " checked" : "";
-  html += "><label>SA868 Filter: Bandpass</label></div>";
+  html += "><label>SA868 Filter: Emphasis</label></div>";
   html += "<div class='checkbox-item'><input name='filterden' type='checkbox' value='1'";
   html += radioFilterDENoise ? " checked" : "";
-  html += "><label>SA868 Filter: De-noise</label></div>";
+  html += "><label>SA868 Filter: High-pass</label></div>";
   html += "<div class='checkbox-item'><input name='filterder' type='checkbox' value='1'";
   html += radioFilterDER ? " checked" : "";
-  html += "><label>SA868 Filter: De-emphasis</label></div>";
+  html += "><label>SA868 Filter: Low-pass</label></div>";
   html += "<div class='checkbox-item'><input name='bandwidth25' type='checkbox' value='1'";
   html += radioBandwidth25 ? " checked" : "";
-  html += "><label>25 kHz Channel Width (uncheck for 12.5 kHz)</label></div>";
+  html += "><label>High Power (uncheck for low power)</label></div>";
 
   // Audio settings
   html += "<h2>Audio Settings</h2>";

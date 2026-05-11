@@ -642,9 +642,8 @@ void initializeSA868() {
   }
 
   // Set frequency from stored settings (simplex mode: TX=RX)
-  // AT+DMOSETGROUP=0,<freq_tx>,<freq_rx>,<tx_ctcss>,<rx_ctcss>,<bandwidth>
-  // bandwidth: 0=12.5kHz, 1=25kHz
-  String cmd = "AT+DMOSETGROUP=0," + radioFreq + "," + radioFreq + "," + radioTxCTCSS + "," + String(radioSquelch) + "," + radioRxCTCSS + "," + String(radioBandwidth25);  // 1 = 25kHz, 0 = 12.5kHz
+  // AT+DMOSETGROUP=<power high=0,low=0>,<freq_tx>,<freq_rx>,<tx_ctcss>,<squelch0-8>,<rx_ctcss>
+  String cmd = "AT+DMOSETGROUP="+String(!radioBandwidth25) + "," + radioFreq + "," + radioFreq + "," + radioTxCTCSS + "," + String(radioSquelch) + "," + radioRxCTCSS;  // 1 = 25kHz, 0 = 12.5kHz
   Serial.printf("Radio config: %s\n", cmd.c_str());
   SA868.println(cmd);
   delay(500);
@@ -662,7 +661,10 @@ void initializeSA868() {
   }
 
   // Set filter: bandpass, de-noise, de-emphasis
-  SA868.println("AT+SETFILTER=" + String(radioFilterBP) + "," + String(radioFilterDENoise) + "," + String(radioFilterDER));
+  // THESE ARE INVERTED SETTINGS: 0=on, 1=off (yes, really - it's how the SA868 works!)
+  SA868.println("AT+SETFILTER=" + String(!radioFilterBP) + "," + String(!radioFilterDENoise) + "," + String(!radioFilterDER));
+  Serial.printf("Radio filter config: emphasis=%s, high-pass=%s, low-pass=%s\n",
+                radioFilterBP==1?"on":"off", radioFilterDENoise==1?"on":"off", radioFilterDER==1?"on":"off");
   delay(500);
   while (SA868.available()) {
     String response = SA868.readStringUntil('\n');
@@ -865,13 +867,16 @@ void generateQualityFeedback() {
     sayText("fair signal");
   } else if (peakRSSI > 0) {
     playTone(400, 500);
-    sayText("weak signal, check antenna");
+    sayText("weak signal");
   } else {
     playTone(300, 300);
     delay(100);
     playTone(300, 300);
     sayText("no signal");
   }
+
+  delay(100);
+  sayText(String(peakRSSI).c_str());
 
   if (clipCount > CLIP_COUNT_WARN) {
     delay(300);
