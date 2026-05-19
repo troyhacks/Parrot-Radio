@@ -13,7 +13,7 @@ This is the recommended hardware platform. ESP32-S3 based with integrated SA868 
 - Configurable frequency, TX/RX CTCSS tones
 - Volume control (0-8)
 - **Filters**: Bandpass, De-noise, De-emphasis (individually toggleable)
-- ~~~**25 kHz / 12.5 kHz** channel bandwidth selection~~~ This module is only 12.5 kHz
+- ~~~**25 kHz / 12.5 kHz** channel bandwidth selection~~ This module is only 12.5 kHz
 - RSSI monitoring via squelch pin
 
 ### Recording & Playback
