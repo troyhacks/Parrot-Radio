@@ -51,7 +51,7 @@ This is the recommended hardware platform. ESP32-S3 based with integrated SA868 
 - Location settings for weather and sun calculations
 - Timezone configuration (POSIX TZ string)
 - Testing mode (PTT disabled)
-- DTMF A instant reboot toggle
+- DTMF D instant reboot toggle
 - Live status display with IP, time, RSSI
 
 ### Macros (for pre/post and TTS test messages)
